@@ -1,11 +1,48 @@
 # JQSubtitle — Just Quality AI Subtitle Maker
 
+Create **SRT + SMI subtitles from video/audio in one click** on Windows.
+Whisper (large-v3) transcribes with word-level timing; Claude AI (optional) fixes
+transcription errors, splits run-on lines into natural sentences, and translates
+into 15 languages.
+
+## Features
+
+- **Transcription**: Whisper large-v3 with true word-level timestamps (uses GPU automatically, falls back to CPU)
+- **Clean subtitles**: sentence-based splitting, auto-split of run-on lines (>60 chars / 8 s), 1-second display extension
+- **SRT + SMI output together**: SMI uses cp949 encoding and KRCC-style classes for Korean players
+- **Claude AI (optional, API key required)**: error correction, natural sentence splitting, translation into 15 languages
+- **Custom AI instructions**: free-text box, e.g. "fix these character names", "translate politely"
+- **Batch processing**: many files at once, per-file error isolation with a final error summary, completion chime
+- **7 UI languages** (English, 한국어, 日本語, 中文, Français, Português, Español), settings auto-saved, drag & drop
+
+## Install & Run
+
+1. Install [Python 3.10+](https://www.python.org/downloads/) (check "Add to PATH")
+2. Download `jqsubtitle_v1.0.py` and double-click it, or run:
+   ```
+   python jqsubtitle_v1.0.py
+   ```
+3. On first launch the required engine (faster-whisper) installs itself; the Whisper
+   model (~3 GB) downloads once on first transcription.
+
+## Claude AI (optional)
+
+To enable correction/translation, get an API key at
+[console.anthropic.com](https://console.anthropic.com/settings/keys) and paste it into
+the app. Pay-per-use (correcting + translating one ~25 min episode usually costs a few
+cents). Without a key you still get full transcription subtitles.
+
+## Feedback · Support
+
+- Bug reports / ideas: [GitHub Issues](https://github.com/i3luegirl/jqsubtitle/issues)
+- If this saved you time: [Support via PayPal](https://paypal.me/jqpark) ☕
+
+---
+
+# 한국어 소개
+
 영상/음성 파일에서 **SRT + SMI 자막을 한 번에 자동 생성**하는 Windows용 프로그램입니다.
 Whisper(large-v3)로 받아쓰고, Claude AI(선택)로 교정·문장 분할·다국어 번역까지 처리합니다.
-
-*Create SRT + SMI subtitles from video/audio in one click — Whisper transcription with
-word-level timing, plus optional Claude AI correction, sentence splitting and translation.
-UI available in English, 한국어, 日本語, 中文, Français, Português, Español.*
 
 ## 주요 기능
 
@@ -24,7 +61,7 @@ UI available in English, 한국어, 日本語, 中文, Français, Português, Es
    ```
    python jqsubtitle_v1.0.py
    ```
-3. 첫 실행 때 필요한 엔진(faster-whisper 등)이 자동 설치되고, 첫 자막 생성 때
+3. 첫 실행 때 필요한 엔진(faster-whisper)이 자동 설치되고, 첫 자막 생성 때
    Whisper 모델(~3GB)을 한 번 내려받습니다.
 
 ## Claude AI 기능 (선택)
@@ -36,7 +73,7 @@ API 키를 발급받아 프로그램에 입력하세요. 사용량만큼 과금�
 ## 문의 · 후원
 
 - 버그 제보/의견: [GitHub Issues](https://github.com/i3luegirl/jqsubtitle/issues)
-- 이 프로그램이 도움이 됐다면: [PayPal로 후원하기](https://paypal.me/jqpark) ☕
+- 도움이 됐다면: [PayPal로 후원하기](https://paypal.me/jqpark) ☕
 
 ## License
 
