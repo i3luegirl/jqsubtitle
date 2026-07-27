@@ -15,15 +15,27 @@ into 15 languages.
 - **Batch processing**: many files at once, per-file error isolation with a final error summary, completion chime
 - **7 UI languages** (English, 한국어, 日本語, 中文, Français, Português, Español), settings auto-saved, drag & drop
 
-## Install & Run
+## Install
+
+**Option A — Quick install (one line).** Open PowerShell and paste:
+
+```powershell
+irm https://raw.githubusercontent.com/i3luegirl/jqsubtitle/main/install.ps1 | iex
+```
+
+This installs Python if needed, downloads JQSubtitle, sets up the speech engine and
+puts a **JQSubtitle icon on your Desktop**. Run the same line again later to update.
+
+**Option B — Manual install.**
 
 1. Install [Python 3.10+](https://www.python.org/downloads/) (check "Add to PATH")
 2. Download `jqsubtitle_v1.0.py` and double-click it, or run:
    ```
    python jqsubtitle_v1.0.py
    ```
-3. On first launch the required engine (faster-whisper) installs itself; the Whisper
-   model (~3 GB) downloads once on first transcription.
+3. On first launch the required engine (faster-whisper) installs itself.
+
+Either way, the Whisper model (~3 GB) downloads once on your first transcription.
 
 ## Claude AI (optional)
 
@@ -54,15 +66,27 @@ Whisper(large-v3)로 받아쓰고, Claude AI(선택)로 교정·문장 분할·�
 - **배치 처리**: 여러 파일 한 번에, 파일별 에러 격리 + 마지막 에러 요약, 완료 알림
 - **UI 표시 언어 7종**, 설정 자동 저장(config.json), 드래그 앤 드롭
 
-## 설치 및 실행
+## 설치
+
+**방법 A — 빠른 설치 (한 줄).** PowerShell을 열고 붙여넣기:
+
+```powershell
+irm https://raw.githubusercontent.com/i3luegirl/jqsubtitle/main/install.ps1 | iex
+```
+
+Python이 없으면 자동 설치하고, 프로그램 다운로드·음성 엔진 설치 후 **바탕화면에
+JQSubtitle 아이콘**을 만들어 줍니다. 업데이트도 같은 한 줄을 다시 실행하면 됩니다.
+
+**방법 B — 수동 설치.**
 
 1. [Python 3.10+](https://www.python.org/downloads/) 설치 (설치 시 "Add to PATH" 체크)
 2. `jqsubtitle_v1.0.py` 다운로드 후 더블클릭 또는:
    ```
    python jqsubtitle_v1.0.py
    ```
-3. 첫 실행 때 필요한 엔진(faster-whisper)이 자동 설치되고, 첫 자막 생성 때
-   Whisper 모델(~3GB)을 한 번 내려받습니다.
+3. 첫 실행 때 필요한 엔진(faster-whisper)이 자동 설치됩니다.
+
+어느 방법이든 첫 자막 생성 때 Whisper 모델(~3GB)을 한 번 내려받습니다.
 
 ## Claude AI 기능 (선택)
 
