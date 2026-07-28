@@ -5,7 +5,7 @@
 $ErrorActionPreference = "Stop"
 [Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor 3072  # TLS 1.2
 $RepoRaw    = "https://raw.githubusercontent.com/i3luegirl/jqsubtitle/main"
-$AppFile    = "jqsubtitle_v1.0.py"
+$AppFile    = "jqsubtitle_v1.1.py"
 $InstallDir = Join-Path $env:LOCALAPPDATA "JQSubtitle"
 
 function Write-Step($msg) { Write-Host "`n==> $msg" -ForegroundColor Cyan }
