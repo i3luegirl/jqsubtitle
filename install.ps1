@@ -6,6 +6,7 @@ $ErrorActionPreference = "Stop"
 [Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor 3072  # TLS 1.2
 $RepoRaw    = "https://raw.githubusercontent.com/i3luegirl/jqsubtitle/main"
 $AppFile    = "jqsubtitle_v1.1.py"
+$IconFile   = "jqsubtitle.ico"
 $InstallDir = Join-Path $env:LOCALAPPDATA "JQSubtitle"
 
 function Write-Step($msg) { Write-Host "`n==> $msg" -ForegroundColor Cyan }
@@ -66,8 +67,19 @@ if ($pyexe) {
 Write-Step "Downloading JQSubtitle... (프로그램 다운로드 중)"
 New-Item -ItemType Directory -Force -Path $InstallDir | Out-Null
 $target = Join-Path $InstallDir "jqsubtitle.py"
-Invoke-WebRequest "$RepoRaw/$AppFile" -OutFile $target
+$tmp    = "$target.download"
+Invoke-WebRequest "$RepoRaw/$AppFile" -OutFile $tmp
+Move-Item $tmp $target -Force          # 중간에 끊겨도 기존 설치가 깨지지 않도록
 Write-Host "    Saved to: $target"
+
+$icon = Join-Path $InstallDir "jqsubtitle.ico"
+try {
+    Invoke-WebRequest "$RepoRaw/$IconFile" -OutFile $icon
+} catch {
+    Write-Host "    Icon download skipped (using default icon)." -ForegroundColor Yellow
+    Remove-Item $icon -Force -ErrorAction SilentlyContinue   # 잘린 파일이 남지 않도록
+    $icon = $null
+}
 
 # ---------- 3) Install the speech engine ----------
 Write-Step "Installing the speech engine (faster-whisper)... (음성 인식 엔진 설치 중 — 수 분 소요)"
@@ -86,7 +98,15 @@ $lnk.TargetPath = $pyw
 $lnk.Arguments = '"' + $target + '"'
 $lnk.WorkingDirectory = $InstallDir
 $lnk.Description = "JQSubtitle - Just Quality AI Subtitle Maker"
+if ($icon -and (Test-Path $icon)) { $lnk.IconLocation = "$icon,0" }
 $lnk.Save()
+
+# Refresh the Windows icon cache so the new icon shows right away
+try {
+    $sig = '[DllImport("shell32.dll")] public static extern void SHChangeNotify(int e, uint f, IntPtr a, IntPtr b);'
+    $sh = Add-Type -MemberDefinition $sig -Name JQShell -Namespace JQ -PassThru
+    $sh::SHChangeNotify(0x08000000, 0, [IntPtr]::Zero, [IntPtr]::Zero)
+} catch { }
 
 # ---------- Done ----------
 Write-Host ""

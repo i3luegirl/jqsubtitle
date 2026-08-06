@@ -96,6 +96,8 @@ MODEL_NAME = "large-v3"
 #    "notes": {"en": "...", "ko": "..."}}
 UPDATE_RAW_BASE = "https://raw.githubusercontent.com/i3luegirl/jqsubtitle/main"
 UPDATE_INFO_URL = UPDATE_RAW_BASE + "/version.json"
+ICON_URL = UPDATE_RAW_BASE + "/jqsubtitle.ico"
+ICON_NAME = "jqsubtitle.ico"
 
 # ---- AI 엔진 (v1.1): Claude(유료·확실) / Gemini(무료 키) / 로컬 AI(Ollama, 설치형) ----
 PROVIDERS = {
@@ -3616,6 +3618,43 @@ class App:
             self.write_log(f"{e}\n")
 
 
+def _icon_path():
+    """앱 아이콘(.ico) 경로. 없으면 GitHub에서 한 번 내려받아 캐시한다."""
+    try:
+        base = os.path.dirname(os.path.abspath(__file__))
+    except Exception:
+        base = os.getcwd()
+    path = os.path.join(base, ICON_NAME)
+    if os.path.exists(path) and os.path.getsize(path) > 500:
+        return path
+    try:
+        import urllib.request
+        req = urllib.request.Request(ICON_URL, headers={"User-Agent": f"{APP_NAME}/{VERSION}"})
+        with urllib.request.urlopen(req, timeout=4) as r:
+            data = r.read()
+        if len(data) > 500:
+            with open(path, "wb") as f:
+                f.write(data)
+            return path
+    except Exception:
+        pass
+    return None
+
+
+def apply_icon(win):
+    """루트/자식 창에 아이콘 적용. 실패해도 앱 동작에는 영향 없음."""
+    path = _icon_path()
+    if not path:
+        return
+    try:
+        win.iconbitmap(default=path)   # Windows: 모든 Toplevel에 상속
+    except Exception:
+        try:
+            win.iconbitmap(path)
+        except Exception:
+            pass
+
+
 DND_OK = False
 
 def _make_root():
@@ -3642,6 +3681,7 @@ def _make_root():
 
 if __name__ == "__main__":
     root = _make_root()
+    apply_icon(root)
     root.withdraw()
     UI["lang"] = load_config().get("ui_lang", "en")  # 설치 안내문도 저장된 언어로
     if not ensure_faster_whisper(root):
