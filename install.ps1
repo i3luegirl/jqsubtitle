@@ -5,7 +5,8 @@
 $ErrorActionPreference = "Stop"
 [Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor 3072  # TLS 1.2
 $RepoRaw    = "https://raw.githubusercontent.com/i3luegirl/jqsubtitle/main"
-$AppFile    = "jqsubtitle_v1.1.py"
+# v1.2부터 배포 파일명은 버전 없이 고정. 새 버전이 나와도 이 줄은 그대로 둔다.
+$AppFile    = "jqsubtitle.py"
 $IconFile   = "jqsubtitle.ico"
 $InstallDir = Join-Path $env:LOCALAPPDATA "JQSubtitle"
 
