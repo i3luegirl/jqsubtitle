@@ -15,6 +15,12 @@ Prefer to stay offline? A local model runs entirely on your own PC, no key and n
 - **Nothing is trusted blindly.** Every AI reply is validated. If it drops words, invents
   text, or breaks the numbering, it is rejected and the original is kept.
 
+<p align="center">
+  <img src="docs/screenshot.png" alt="JQSubtitle main window" width="560">
+</p>
+
+<p align="center"><i>Drop in a file, pick your output languages, click once.</i></p>
+
 ## Features
 
 - **Transcription**: Whisper large-v3 with true word-level timestamps (uses GPU automatically, falls back to CPU)
@@ -105,6 +111,12 @@ Whisper(large-v3)가 단어 단위 타임스탬프까지 받아쓰면, AI 엔진
 
 **Gemini API 키로 무료 사용 — 카드 등록 불필요.** 이 조합을 권합니다.
 오프라인으로 쓰고 싶다면 로컬 모델이 이 PC 안에서만 돌아갑니다. 키도 인터넷도 필요 없습니다.
+
+<p align="center">
+  <img src="docs/screenshot.png" alt="JQSubtitle 실행 화면" width="560">
+</p>
+
+<p align="center"><i>파일 넣고, 출력 언어 고르고, 한 번 누르면 끝.</i></p>
 
 ## 주요 기능
 

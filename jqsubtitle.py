@@ -1613,7 +1613,7 @@ I18N.update({
 "prov_local_tag": {"en": "free · offline · needs a GPU", "ko": "무료 · 오프라인 · GPU 필요",
  "ja": "無料・オフライン・GPU必須", "zh": "免费 · 离线 · 需要 GPU",
  "fr": "gratuit · hors ligne · GPU requis", "pt": "grátis · offline · precisa de GPU",
- "es": "gratis · sin conexión · requiere GPU"},
+ "es": "gratis · offline · requiere GPU"},
 # v1.2: 이 문구의 목적이 바뀌었다.
 #   v1.1까지는 "품질이 나쁘니 쓰지 마세요"로 기대치를 낮추는 게 목적이었다. 로컬 모델을
 #   Gemma 4 로 교체한 뒤 품질이 무료 API 에 근접해, 이제는 "품질은 괜찮은데 하드웨어를
@@ -3639,9 +3639,15 @@ class App:
             # ----- 엔진 선택 + API 키 + 출력 언어 + 추가 지시 -----
             ttk.Label(krow, text=T("lbl_engine")).pack(side="left", padx=(4, 0))
             self._prov_codes = list(PROVIDER_ORDER)
+            # v1.2: 라벨에 품질/조건 설명이 붙어 길어졌다. 폭을 고정값으로 두면
+            #   "Gemini (free API · recommende…" 처럼 잘린다. 언어마다 길이가 크게
+            #   달라서(스페인어 47자 vs 일본어 25자) 가장 긴 라벨에 맞춰 잡는다.
+            #   ★ width 를 다시 상수로 되돌리지 말 것.
+            _labels = [self.prov_label(c) for c in self._prov_codes]
             self.prov_combo = ttk.Combobox(
-                krow, state="readonly", width=24,
-                values=[self.prov_label(c) for c in self._prov_codes])
+                krow, state="readonly",
+                width=min(46, max(24, max(len(s) for s in _labels) + 2)),
+                values=_labels)
             self.prov_combo.current(self._prov_codes.index(self.ai_provider))
             self.prov_combo.pack(side="left", padx=(6, 0))
             self.prov_combo.bind("<<ComboboxSelected>>", self.on_provider_changed)
