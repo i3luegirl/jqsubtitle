@@ -1,16 +1,25 @@
 # JQSubtitle — Just Quality AI Subtitle Maker
 
-Create **SRT + SMI subtitles from video/audio in one click** on Windows.
-Whisper (large-v3) transcribes with word-level timing; an AI engine (optional) fixes
-transcription errors, splits run-on lines into natural sentences, and translates
-into 15 languages.
+Create **SRT + SMI subtitles from video or audio in one click** on Windows.
+Whisper (large-v3) transcribes with word-level timing. An AI engine then rebuilds those
+words into real sentences — one sentence per line, split where the speaker actually
+changes, punctuated — fixes mis-heard words, and translates into 15 languages.
 
-**Gemini works for free — no credit card.** That is the recommended setup.
+**Free with a Gemini API key — no credit card.** That is the recommended setup.
+Prefer to stay offline? A local model runs entirely on your own PC, no key and no internet.
+
+- **Clean subtitles from messy speech.** Speech recognition returns a stream of words with
+  no sentence boundaries. Cutting that at silences glues separate sentences together and
+  chops lines mid-thought. JQSubtitle rebuilds the lines from word-level timings instead,
+  so timing always comes from real measurements — never from guesswork.
+- **Nothing is trusted blindly.** Every AI reply is validated. If it drops words, invents
+  text, or breaks the numbering, it is rejected and the original is kept.
 
 ## Features
 
 - **Transcription**: Whisper large-v3 with true word-level timestamps (uses GPU automatically, falls back to CPU)
-- **Clean subtitles**: sentence-based splitting, auto-split of run-on lines (>60 chars / 8 s), 1-second display extension
+- **Sentence rebuilding**: subtitles are assembled from word timings, not patched afterwards — run-on lines are separated, words cut into the wrong line are put back, and long lines are split at natural pauses
+- **Validated output**: replies with missing, duplicate or out-of-range word numbers are rejected; the original is kept and the reason is logged
 - **SRT + SMI output together**: SMI uses cp949 encoding and KRCC-style classes for Korean players
 - **Three AI engines** — pick one in the app:
   - **Gemini** — free API key, no credit card. Default and recommended.
@@ -55,10 +64,11 @@ on start**, or check manually any time from the same menu.
 If you are still on v1.0, run the one-line installer above once; after that the built-in
 updater takes over.
 
-## AI engines (optional)
+## AI engines
 
-Without any key you still get full transcription subtitles. To enable correction,
-sentence splitting and translation, set up one engine:
+You pick one of the three in the app — there is no "off" switch. Sentence rebuilding,
+proofreading and translation are all AI steps, so running without them only ever
+produced broken subtitles. Set up whichever suits you:
 
 - **Gemini (free)** — get a key at [aistudio.google.com/apikey](https://aistudio.google.com/apikey)
   and paste it into the app. No credit card. The free tier has per-minute rate limits;
@@ -89,14 +99,18 @@ subtitle those videos.
 # 한국어 소개
 
 영상/음성 파일에서 **SRT + SMI 자막을 한 번에 자동 생성**하는 Windows용 프로그램입니다.
-Whisper(large-v3)로 받아쓰고, AI 엔진(선택)으로 교정·문장 분할·다국어 번역까지 처리합니다.
+Whisper(large-v3)가 단어 단위 타임스탬프까지 받아쓰면, AI 엔진이 그 단어들을 진짜 문장으로
+다시 조립합니다 — 한 줄에 한 문장씩, 말하는 사람이 바뀌는 자리에서 끊고, 문장부호를 붙여서.
+잘못 들은 단어를 고치고 15개 언어로 번역까지 합니다.
 
-**Gemini는 무료로 쓸 수 있습니다 — 카드 등록 불필요.** 이 조합을 권합니다.
+**Gemini API 키로 무료 사용 — 카드 등록 불필요.** 이 조합을 권합니다.
+오프라인으로 쓰고 싶다면 로컬 모델이 이 PC 안에서만 돌아갑니다. 키도 인터넷도 필요 없습니다.
 
 ## 주요 기능
 
 - **음성 인식**: Whisper large-v3, 단어 단위 실측 타임스탬프 (GPU 자동 사용, 없으면 CPU)
-- **자막 정리**: 문장 단위 분할, 뭉친 자막(60자/8초 초과) 자동 분할, 끝 1초 표시 연장
+- **문장 재조립**: 자막을 사후에 손보는 게 아니라 단어 타임스탬프에서 새로 조립 — 붙어 나온 문장을 나누고, 옆 줄로 잘려 넘어간 단어를 되돌리고, 긴 줄은 쉬는 자리에서 분할
+- **응답 검증**: 단어 번호가 빠지거나 겹치거나 범위를 벗어난 응답은 거부하고 원본 유지 (사유는 로그에 기록)
 - **SRT + SMI 동시 출력**: SMI는 cp949 인코딩·KRCC 클래스 등 국내 플레이어 호환 형식
 - **AI 엔진 3종** — 프로그램에서 선택:
   - **Gemini** — 무료 API 키, 카드 등록 불필요. 기본값이자 권장.
@@ -141,10 +155,10 @@ v1.1부터는 프로그램이 시작할 때 새 버전을 확인하고, 있으�
 v1.0을 쓰고 계시면 위의 한 줄 설치 명령을 한 번만 다시 실행해 주세요. 그다음부터는
 프로그램이 알아서 업데이트합니다.
 
-## AI 엔진 (선택)
+## AI 엔진
 
-키가 없어도 받아쓰기 자막은 만들어집니다. 교정·문장 분할·번역을 쓰려면 엔진 하나를
-설정하세요:
+프로그램에서 셋 중 하나를 고릅니다 — "끄기"는 없습니다. 문장 재조립·교정·번역이 전부
+AI 단계라, 없이 돌리면 사실상 망가진 자막만 나오기 때문입니다. 편한 쪽으로 준비하세요:
 
 - **Gemini (무료)** — [aistudio.google.com/apikey](https://aistudio.google.com/apikey)에서
   키를 발급받아 프로그램에 붙여넣기. 카드 등록 불필요. 무료 티어는 분당 요청 제한이 있는데
