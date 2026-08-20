@@ -82,7 +82,7 @@ _register_nvidia_dll_dirs()
 
 APP_NAME = "JQSubtitle"
 APP_FULL = "Just Quality AI Subtitle Maker"
-VERSION = "1.2"
+VERSION = "1.3.2"
 COPYRIGHT = "© 2026 JQ Park · MIT License"
 GITHUB_URL = "https://github.com/i3luegirl/jqsubtitle"
 ISSUES_URL = GITHUB_URL + "/issues"
@@ -105,33 +105,341 @@ UPDATE_INFO_URL = UPDATE_RAW_BASE + "/version.json"
 ICON_URL = UPDATE_RAW_BASE + "/jqsubtitle.ico"
 ICON_NAME = "jqsubtitle.ico"
 
-# ---- AI 엔진 (v1.1): Claude(유료·확실) / Gemini(무료 키) / 로컬 AI(Ollama, 설치형) ----
-PROVIDERS = {
-    "claude": {"name": "Claude", "model": "claude-sonnet-4-6",
-               "key_url": "https://console.anthropic.com/settings/keys"},
-    "gemini": {"name": "Gemini",
-               # 무료 티어 모델은 구형화가 잦아 404 시 아래 순서로 자동 대체
-               "models": ["gemini-3-flash", "gemini-flash-latest", "gemini-2.5-flash",
-                          "gemini-2.0-flash"],
-               "model": "gemini-3-flash",
-               "key_url": "https://aistudio.google.com/apikey"},
-    "local":  {"name": "Local AI", "model": "",  # 실제 모델명은 LOCAL_MODEL 참조
-               "key_url": "https://ollama.com"},
+# =============================================================================
+#  AI 엔진 정의 (v1.3.2)
+# =============================================================================
+#
+#  ★ 새 엔진을 추가할 때 손댈 곳은 두 군데뿐이다.
+#      ① 아래 ENGINES 표에 항목 하나 추가
+#      ② @engine_call("이름") 을 붙인 호출 함수 하나 작성
+#    나머지 코드는 엔진 이름을 모른다. 묶음 크기·대기 시간·재시도 정책이
+#    필요하면 EOPT(provider, "키") 로 표에 물어본다.
+#
+#  ★ 엔진별 값을 코드 여기저기에 if 문으로 흩지 말 것.
+#    v1.3.1 까지는 `LOCAL_CHUNK_WORDS if provider == "local" else ...` 같은
+#    삼항 분기가 5군데에 흩어져 있었다. 엔진을 하나 더 넣으려면 그 5군데를
+#    모두 찾아 고쳐야 했고, 하나라도 놓치면 새 엔진이 로컬용 값으로 돌았다.
+#    값은 전부 이 표에 모으고, 바깥은 EOPT() 만 부른다.
+#
+#  ---- 항목 설명 -------------------------------------------------------------
+#   [표시]  name          UI에 보이는 이름
+#           key_url       API 키 발급 페이지
+#           needs_key     False면 키 입력칸을 숨기고 키 없이도 실행 허용
+#   [모델]  model         기본 모델
+#           models        대체 후보 목록 (앞에서부터 시도). 없으면 model 하나만
+#   [요청]  min_interval  요청 사이 최소 간격(초). 무료 티어 분당 한도 대비용
+#           http_retries  HTTP 오류 시 _post_json 내부 재시도 횟수
+#           http_timeout  한 요청의 제한 시간(초)
+#           retry_codes   이 상태코드는 대기 후 재시도
+#           fallback_codes 이 상태코드는 '다음 모델 후보'로 넘어감
+#   [묶음]  rebuild_chunk_words  재조립 때 한 번에 보내는 단어 수
+#           lines_chunk          교정·번역 때 한 번에 보내는 줄 수
+#           gap_fill_batch       빠진 줄 보충 때 한 번에 보내는 줄 수
+#           max_tokens_cap       출력 토큰 상한
+#   [한도]  quota_guard   True면 한도 오류 연속 감지 시 그 단계를 중단
+#           quota_streak  몇 번 연속이면 중단할지
+# =============================================================================
+
+ENGINE_DEFAULTS = {
+    "needs_key": True,
+    "models": None,
+    "min_interval": 0.0,
+    "http_retries": 3,
+    "http_timeout": 180,
+    "retry_codes": (429, 500, 502, 503, 529),
+    "fallback_codes": (404,),
+    "rebuild_chunk_words": 150,
+    "lines_chunk": 200,
+    "gap_fill_batch": 12,
+    "max_tokens_cap": 8000,
+    "quota_guard": False,
+    "quota_streak": 3,
 }
+
+ENGINES = {
+    # ---------------------------------------------------------------- Claude
+    "claude": {
+        "name": "Claude",
+        "model": "claude-sonnet-4-6",
+        "key_url": "https://console.anthropic.com/settings/keys",
+        # 유료라 분당 한도가 넉넉하다. 간격도 차단기도 필요 없다.
+        "min_interval": 0.0,
+        "quota_guard": False,
+        "fallback_codes": (),          # 대체 모델 목록이 없다
+        "rebuild_chunk_words": 150,
+        "lines_chunk": 200,
+    },
+
+    # ---------------------------------------------------------------- Gemini
+    "gemini": {
+        "name": "Gemini",
+        # 무료 티어 모델명은 구형화가 잦다. 앞에서부터 순서대로 시도한다.
+        "models": ["gemini-3-flash", "gemini-flash-latest", "gemini-2.5-flash",
+                   "gemini-2.0-flash"],
+        "model": "gemini-3-flash",
+        "key_url": "https://aistudio.google.com/apikey",
+
+        # ★ 무료 티어는 분당 10회다. 간격 없이 쏘면 반드시 429가 난다.
+        #   6초가 최소인데 여유를 둬서 6.5초. 사후 대기(20/40/60초)보다
+        #   사전 간격이 훨씬 싸다 — 자세한 사고 기록은 QuotaError 주석 참고.
+        "min_interval": 6.5,
+
+        # ★ 재조립 요청 수를 줄이는 것이 핵심이다.
+        #   150단어면 한 편에 23회, 400단어면 9회. 컨텍스트가 1M이라 여유롭고
+        #   묶음이 커지는 만큼 문맥도 넓어져 재조립 품질도 올라간다.
+        "rebuild_chunk_words": 400,
+        "lines_chunk": 200,
+
+        # ★ 503(과부하)·429(한도)에서도 다음 모델 후보로 넘어간다.
+        #   v1.3.1까지는 404에서만 넘어갔다. gemini-3-flash가 붐빈다고
+        #   2.5-flash까지 붐비는 건 아닌데, 그대로 죽어버렸다.
+        "fallback_codes": (404, 429, 500, 502, 503, 529),
+
+        # ★ 한도가 소진되면 더 두드려도 소용없다. 3연속이면 그 단계를 접는다.
+        "quota_guard": True,
+        "quota_streak": 3,
+    },
+
+    # ------------------------------------------------------------- 로컬(Ollama)
+    "local": {
+        "name": "Local AI",
+        "model": "",                   # 실제 모델명은 LOCAL_MODEL 참조
+        "key_url": "https://ollama.com",
+        "needs_key": False,            # 내 컴퓨터에서 도니 키가 없다
+
+        # 내 GPU라 한도도 요금도 없다. 간격·차단기 모두 끈다.
+        "min_interval": 0.0,
+        "quota_guard": False,
+
+        # ★ 로컬만 값이 작다. num_ctx 8192 안에 들어가야 하기 때문이다.
+        #   40줄 ≒ 시스템 700 + 입력 700 + 출력 900 ≈ 2,300 토큰.
+        #   8GB~24GB 어느 카드에서도 같은 결과가 나오도록 고정한다.
+        "rebuild_chunk_words": 60,
+        "lines_chunk": 40,
+    },
+}
+
 PROVIDER_ORDER = ["claude", "gemini", "local"]
 DEFAULT_PROVIDER = "gemini"
+
+# 기존 코드 호환용 별칭 (UI가 PROVIDERS[code]["name"] 등을 그대로 쓴다)
+PROVIDERS = ENGINES
+
+
+def EOPT(provider, key):
+    """엔진 설정값을 읽는다. 해당 엔진에 없으면 기본값으로 떨어진다.
+
+    ★ 바깥 코드는 이 함수만 쓴다. `if provider == "local"` 을 새로 만들지 말 것."""
+    eng = ENGINES.get(provider)
+    if eng is not None and key in eng:
+        return eng[key]
+    return ENGINE_DEFAULTS[key]
+
+
+# 엔진별 실제 호출 함수 등록소. @engine_call("이름") 데코레이터로 채워진다.
+ENGINE_CALLS = {}
+
+
+def engine_call(code):
+    """엔진 호출 함수를 등록한다.
+
+    함수 시그니처: fn(api_key, system, user_text, max_tokens, log) -> str
+    """
+    def deco(fn):
+        ENGINE_CALLS[code] = fn
+        return fn
+    return deco
 LOCAL_MODEL = {"name": "gemma4:12b"}  # Settings에서 변경 가능 (config: local_model)
 # v1.2: gemma4:12b -> gemma4:12b 로 교체.
 #   qwen3 는 추론형이라 <think> 에서 수천 토큰을 소모해 매우 느렸고, 형식 준수도 불안정했다.
 #   gemma4:12b 는 7.6GB / 256K 컨텍스트 / 사고 모드 기본 꺼짐 / 140개 언어.
-#   ※ 목록은 한 개만 유지한다 (사용자 방침). 늘리지 말 것.
-LOCAL_MODELS = ["gemma4:12b"]
+#
+# v1.3: 26b 를 '선택지로만' 추가한다. 기본값은 그대로 12b 다.
+#   ★ 기본값을 26b 로 바꾸지 말 것.
+#     26b 는 약 14.4GB 라 16GB 카드에서도 윈도우 화면 표시분(1~1.5GB)까지 더하면
+#     경계선이다. 브라우저 하나만 켜도 GPU 밖으로 밀려나고, Ollama 는 그때
+#     에러를 내지 않고 조용히 본체 메모리로 넘겨 3~5배 느려진다.
+#     "되긴 하는데 이유 없이 느린" 상태가 가장 나쁜 사용자 경험이라 기본값이 될 수 없다.
+#     쓰고 싶은 사람만 설정에서 고르게 하고, 밀려나면 경고를 띄운다(check_local_vram).
+LOCAL_MODELS = ["gemma4:12b", "gemma4:26b"]
 OLLAMA_URL = "http://127.0.0.1:11434"
 
 # ---- 로컬 AI 튜닝값 (v1.2) — 값의 근거는 _local_chat_stream() 주석 참고 ----
 LOCAL_NUM_CTX = 8192       # Ollama 기본 4096으로는 시스템 프롬프트가 잘린다
-LOCAL_CHUNK_WORDS = 60     # 로컬은 한 번에 적게 — 대기 시간이 짧아지고 실패해도 손해가 적다
+#  (묶음 크기는 v1.3.2부터 ENGINES 표로 옮겼다 — "rebuild_chunk_words")
 LOCAL_READ_TIMEOUT = 300   # 줄과 줄 사이 제한 (전체 시간 제한이 아님)
+
+# ---- 교정·번역 묶음 크기 (v1.3) ----------------------------------------
+#  ★ 이 값들을 없애고 "한 번에 전부 보내기"로 되돌리지 말 것.
+#
+#  v1.2 까지 correct_with_claude / translate_with_claude 는 자막 전체를 한 번에
+#  보냈다. 800줄짜리 영상이면 입력만 1만 토큰이 넘는데 LOCAL_NUM_CTX 는 8192 라
+#  Ollama 가 프롬프트 앞부분을 잘라냈다. 잘려 나가는 게 하필 맨 앞에 있는
+#  '시스템 프롬프트'(=출력 형식 지시)여서, 모델은 아무 지시도 못 본 채
+#  한국어 덩어리만 받고 엉뚱한 짧은 답을 뱉었다.
+#
+#  그 결과가 실제 로그다:
+#      done — 1497 chars in 101s
+#      Warning: correction returned 0 of 722 lines
+#      Translation done: 0 lines
+#  722줄을 보냈는데 1,497자만 돌아왔고 형식 매칭은 0건이었다.
+#  번역이 통째로 실패했는데도 _en.srt 는 한국어인 채로 저장됐다.
+#
+#  재조립(rebuild_from_words)만 멀쩡했던 이유가 이거다 — 거기만 쪼개서 보냈다.
+#  아래 값은 그 방식을 교정·번역에도 똑같이 적용한 것이다.
+#  ★ v1.3.2: 엔진별 묶음 크기는 이 자리가 아니라 ENGINES 표에 있다.
+#    여기에 상수를 다시 만들지 말 것 — 표와 어긋나면 "고쳤는데 안 먹는" 상태가 된다.
+#      로컬   lines_chunk 40   (num_ctx 8192 안에 들어가야 한다)
+#      클라우드 lines_chunk 200 (컨텍스트가 넉넉하다)
+NUMBERED_MIN_MATCH = 0.6       # 한 묶음에서 이 비율 미만이 돌아오면 그 묶음은 다시 시도
+NUMBERED_RETRIES = 2           # 묶음당 재시도 횟수 (첫 시도 포함하면 최대 3번)
+GAP_FILL_ROUNDS = 2            # 빠진 줄 보충을 몇 바퀴 돌 것인가
+                               # (한 번에 보내는 줄 수는 엔진별: EOPT "gap_fill_batch")
+
+
+# ---- 사용량 한도 처리 (v1.3.2) -------------------------------------------
+#
+#  실제 사고 기록. Gemini 무료 티어로 한 편을 돌렸더니 4시간 반을 헛돌았다.
+#
+#  원인은 재시도가 세 겹으로 곱해진 것이다:
+#      _post_json 3회(20+40+60초) × 묶음 재시도 3회 × 보충 배치 32개
+#      = 한 단계에 140분. 교정과 번역을 합쳐 280분.
+#
+#  재시도 자체는 옳다 — 로컬에서 무작위로 깨지는 묶음을 되살려 줬다.
+#  문제는 "가끔 실패"와 "계속 실패"를 구분하지 못한 것이다.
+#  429가 30번 연속으로 났으면 31번째도 실패한다. 그때는 멈춰야 한다.
+#
+#  ★ 이 장치는 quota_guard=True 인 엔진에서만 동작한다(현재 Gemini뿐).
+#    로컬은 429를 낼 일이 없어 코드가 있어도 절대 걸리지 않고,
+#    Claude는 표에서 꺼 두었다.
+
+class QuotaError(RuntimeError):
+    """API 사용량 한도 오류(429). 일반 실패와 구분해서 다룬다.
+
+    daily=True  일일 한도 — 오늘은 기다려도 안 풀린다. 즉시 포기한다.
+    daily=False 분당 한도 — 잠시 기다리면 회복된다."""
+    def __init__(self, msg, daily=False):
+        super().__init__(msg)
+        self.daily = daily
+
+
+def _is_daily_quota(body):
+    """429 본문이 '일일 한도'를 가리키는지 본다.
+    구글은 metric 이름에 per_day / PerDay 를 넣어 준다."""
+    b = (body or "").lower()
+    return ("per_day" in b) or ("perday" in b) or ("per day" in b)
+
+
+_QUOTA = {"streak": 0, "dead": False}
+
+
+def reset_quota_state():
+    """작업을 새로 시작할 때 호출. 지난 실행의 한도 상태를 지운다."""
+    _QUOTA["streak"] = 0
+    _QUOTA["dead"] = False
+
+
+def quota_dead():
+    return _QUOTA["dead"]
+
+
+def note_quota_fail(provider, daily=False):
+    """한도 오류 1건 기록. 차단 상태가 되면 True."""
+    if not EOPT(provider, "quota_guard"):
+        return False                    # 이 엔진은 차단기를 쓰지 않는다
+    _QUOTA["streak"] += 1
+    if daily or _QUOTA["streak"] >= EOPT(provider, "quota_streak"):
+        _QUOTA["dead"] = True
+    return _QUOTA["dead"]
+
+
+def note_quota_ok():
+    _QUOTA["streak"] = 0
+
+
+# ---- 요청 간격 (v1.3.2) ---------------------------------------------------
+_LAST_CALL = {}
+
+
+def pace_engine(provider, log=None):
+    """엔진별 최소 요청 간격을 지킨다. min_interval=0 이면 아무 일도 안 한다.
+
+    ★ 취소가 즉시 먹도록 잘게 쪼개서 잔다.
+      한 번에 6.5초를 자면 그동안 멈춤 버튼이 안 통한다."""
+    gap = EOPT(provider, "min_interval")
+    if gap <= 0:
+        return
+    last = _LAST_CALL.get(provider, 0.0)
+    remain = gap - (time.time() - last)
+    if last > 0 and remain > 0:
+        if log and remain >= 1.0:
+            log("\r" + T("log_pace", p=EOPT(provider, "name"), s=f"{remain:.0f}"))
+        end = time.time() + remain
+        while time.time() < end:
+            raise_if_cancelled()
+            time.sleep(min(0.25, max(0.0, end - time.time())))
+    _LAST_CALL[provider] = time.time()
+#
+# ---- v1.3.1: 왜 재시도·보충이 필요한가 -----------------------------------
+#  v1.3 첫 실행 결과: 828줄 중 684줄 번역, 144줄(17%)이 한국어로 남았다.
+#      · 120줄 = 묶음 4·7·10 이 통째로 거부됨
+#      ·  24줄 = 성공한 묶음 안에서 개별로 빠짐
+#
+#  실패한 묶음의 원문을 성공한 묶음과 비교해 봤지만 줄 길이·미완결 문장 비율·
+#  짧은 줄 수 어느 지표로도 구분되지 않았다. 즉 내용 탓이 아니라 무작위 실패다.
+#  (로컬 모델이 40줄쯤에서 번호를 놓치는 일이 확률적으로 일어난다.)
+#
+#  ★ 무작위 실패이므로 '다시 시도하면 대체로 성공한다'. 그런데 v1.3 은 재시도가
+#    없었고, 더 나쁘게는 부분 성공까지 통째로 버렸다 — 묶음 10 은 40줄 중 21줄이
+#    제대로 왔는데도 기준(60%) 미달이라 21줄을 다 버렸다.
+#    고칠 원칙 두 가지:
+#      ① 돌아온 줄은 버리지 않는다.
+#      ② 못 받은 줄만 다시 묻는다 (묶음 단위 재시도 -> 빠진 줄만 보충).
+
+
+# ---- 취소 처리 (v1.3) ---------------------------------------------------
+#
+#  v1.2 까지 cancel_flag 는 네 군데에서만 확인됐다: 파일 사이, Whisper 세그먼트,
+#  번역 언어 사이, 그리고 전체 종료 시점. 정작 오래 걸리는 안쪽 루프에는 없었다.
+#      · 재조립 블록 루프   60블록 × 10~20초  -> 취소까지 최대 15분
+#      · 교정/번역 묶음 루프 21묶음 × 30~60초 -> 취소까지 최대 20분
+#      · AI 응답 스트리밍   한 번에 100초까지
+#  그래서 "멈춤을 눌렀는데 한참 안 멈추는" 증상이 났다.
+#
+#  ★ 해결은 '가장 안쪽'에서 확인하는 것이다. AI가 글자를 하나씩 받아오는
+#    스트리밍 루프에 확인을 넣으면 1초 안에 멈춘다. 바깥 루프에만 넣으면
+#    현재 호출이 끝날 때까지는 여전히 기다려야 한다.
+#
+#  함수 인자로 콜백을 6단계 내려보내는 대신 모듈 전역 훅을 쓴다. 작업 스레드는
+#  한 번에 하나뿐이라 이걸로 충분하고, 기존 함수 시그니처를 건드리지 않아 안전하다.
+_CANCEL = {"fn": None}
+
+
+class CancelledError(RuntimeError):
+    """사용자가 멈춤을 눌렀을 때. 일반 실패와 구분하려고 따로 둔다.
+    (일반 실패로 처리하면 '번역 실패' 같은 엉뚱한 메시지가 로그에 남는다.)"""
+    pass
+
+
+def set_cancel_check(fn):
+    """작업 시작 시 App 이 자기 cancel_flag 를 읽는 함수를 등록한다.
+    작업이 끝나면 None 으로 되돌린다."""
+    _CANCEL["fn"] = fn
+
+
+def is_cancelled():
+    fn = _CANCEL.get("fn")
+    if not fn:
+        return False
+    try:
+        return bool(fn())
+    except Exception:
+        return False
+
+
+def raise_if_cancelled():
+    if is_cancelled():
+        raise CancelledError("cancelled by user")
 
 # 모델 계열별 샘플링/사고모드 설정.
 #  ★ 샘플링 값은 각 모델 제조사가 공식 문서에서 권장하는 값이다. 임의로 바꾸지 말 것.
@@ -1763,13 +2071,275 @@ I18N.update({
  "fr": "Modèle IA locale... (actuel : {m})", "pt": "Modelo de IA local... (atual: {m})",
  "es": "Modelo de IA local... (actual: {m})"},
 "dlg_local_model": {
- "en": "Choose the local AI model. Bigger = better quality but needs more VRAM.\nThe model downloads on first use. gemma4:12b is the current default\n(10 GB+ VRAM). More models will be added here as better ones appear.",
- "ko": "로컬 AI 모델을 고르세요. 클수록 품질이 좋지만 VRAM을 더 씁니다.\n모델은 처음 사용할 때 다운로드됩니다. 현재 기본값은 gemma4:12b\n(VRAM 10GB 이상). 더 나은 모델이 나오면 여기에 추가됩니다.",
- "ja": "ローカルAIモデルを選択。大きいほど高品質ですがVRAMを多く使います。\n初回使用時にダウンロードされます。現在の既定は gemma4:12b（VRAM 10GB以上）。\nより良いモデルが出たらここに追加されます。",
- "zh": "选择本地 AI 模型。越大质量越好，但需要更多显存。\n首次使用时下载。当前默认为 gemma4:12b（显存 10GB 以上）。\n出现更好的模型后会添加到这里。",
- "fr": "Choisissez le modèle local. Plus grand = meilleure qualité mais plus de VRAM.\nTéléchargé à la première utilisation. Défaut actuel : gemma4:12b (10 Go+ VRAM).\nD'autres modèles seront ajoutés ici dès qu'il y en aura de meilleurs.",
- "pt": "Escolha o modelo local. Maior = melhor qualidade, mais VRAM.\nBaixado no primeiro uso. Padrão atual: gemma4:12b (10 GB+ de VRAM).\nOutros modelos serão adicionados aqui quando surgirem melhores.",
- "es": "Elige el modelo local. Más grande = mejor calidad, más VRAM.\nSe descarga en el primer uso. Predeterminado actual: gemma4:12b (10 GB+ de VRAM).\nSe añadirán más modelos aquí cuando aparezcan mejores."},
+ "en": "Choose the local AI model. The model downloads on first use.\n\n"
+       "  gemma4:12b  — default. ~6.7 GB, needs 10 GB+ VRAM.\n"
+       "  gemma4:26b  — advanced. ~14.4 GB, needs 16 GB+ VRAM and a free GPU.\n\n"
+       "26b is a mixture-of-experts model: bigger, but about as fast as a small one.\n"
+       "On a 16 GB card it only just fits — close other GPU apps before using it.\n"
+       "If it does not fit, Ollama silently falls back to system RAM and gets\n"
+       "3-5x slower. The app will warn you when that happens.",
+ "ko": "로컬 AI 모델을 고르세요. 모델은 처음 사용할 때 다운로드됩니다.\n\n"
+       "  gemma4:12b  — 기본값. 약 6.7GB, VRAM 10GB 이상 권장.\n"
+       "  gemma4:26b  — 고급. 약 14.4GB, VRAM 16GB 이상 + GPU 여유 필요.\n\n"
+       "26b는 전문가 혼합(MoE) 방식이라 덩치는 크지만 속도는 작은 모델급입니다.\n"
+       "다만 16GB 카드에서는 빠듯합니다 — 쓰시기 전에 다른 GPU 프로그램을 닫으세요.\n"
+       "안 들어가면 Ollama가 에러 없이 본체 메모리로 넘겨 3~5배 느려집니다.\n"
+       "그렇게 되면 프로그램이 경고를 띄웁니다.",
+ "ja": "ローカルAIモデルを選択。初回使用時にダウンロードされます。\n\n"
+       "  gemma4:12b  — 既定。約6.7GB、VRAM 10GB以上。\n"
+       "  gemma4:26b  — 上級。約14.4GB、VRAM 16GB以上とGPUの空き。\n\n"
+       "26bはMoE方式で、大きくても速度は小型モデル並みです。\n"
+       "16GBでは余裕がないため、使う前に他のGPUアプリを閉じてください。\n"
+       "収まらない場合Ollamaは無言でRAMに退避し3~5倍遅くなります（警告を表示します）。",
+ "zh": "选择本地 AI 模型。首次使用时下载。\n\n"
+       "  gemma4:12b  — 默认。约 6.7GB，需显存 10GB 以上。\n"
+       "  gemma4:26b  — 高级。约 14.4GB，需显存 16GB 以上且 GPU 空闲。\n\n"
+       "26b 为混合专家（MoE）模型：体积大但速度接近小模型。\n"
+       "16GB 显卡上非常勉强 — 使用前请关闭其他占用显存的程序。\n"
+       "若装不下，Ollama 会静默改用内存，速度下降 3~5 倍（届时会有警告）。",
+ "fr": "Choisissez le modèle local. Téléchargé à la première utilisation.\n\n"
+       "  gemma4:12b  — défaut. ~6,7 Go, 10 Go+ de VRAM.\n"
+       "  gemma4:26b  — avancé. ~14,4 Go, 16 Go+ de VRAM et un GPU libre.\n\n"
+       "26b est un modèle MoE : plus gros, mais presque aussi rapide qu'un petit.\n"
+       "Sur une carte 16 Go, c'est juste — fermez les autres applications GPU.\n"
+       "Sinon Ollama bascule silencieusement sur la RAM et devient 3-5x plus lent.",
+ "pt": "Escolha o modelo local. Baixado no primeiro uso.\n\n"
+       "  gemma4:12b  — padrão. ~6,7 GB, 10 GB+ de VRAM.\n"
+       "  gemma4:26b  — avançado. ~14,4 GB, 16 GB+ de VRAM e GPU livre.\n\n"
+       "26b é um modelo MoE: maior, mas quase tão rápido quanto um pequeno.\n"
+       "Numa placa de 16 GB fica no limite — feche outros aplicativos de GPU.\n"
+       "Se não couber, o Ollama usa a RAM em silêncio e fica 3-5x mais lento.",
+ "es": "Elige el modelo local. Se descarga en el primer uso.\n\n"
+       "  gemma4:12b  — predeterminado. ~6,7 GB, 10 GB+ de VRAM.\n"
+       "  gemma4:26b  — avanzado. ~14,4 GB, 16 GB+ de VRAM y GPU libre.\n\n"
+       "26b es un modelo MoE: más grande, pero casi tan rápido como uno pequeño.\n"
+       "En una tarjeta de 16 GB va justo — cierra otras aplicaciones que usen GPU.\n"
+       "Si no cabe, Ollama pasa a la RAM en silencio y va 3-5x más lento."},
+})
+
+
+# ---- v1.3: 묶음 처리 / VRAM 경고 ----
+I18N.update({
+"log_chunk": {
+ "en": "  [{l}] block {c} ({t} lines)...",
+ "ko": "  [{l}] 묶음 {c} ({t}줄)...",
+ "ja": "  [{l}] ブロック {c}（{t}行）...",
+ "zh": "  [{l}] 分块 {c}（{t} 行）...",
+ "fr": "  [{l}] bloc {c} ({t} lignes)...",
+ "pt": "  [{l}] bloco {c} ({t} linhas)...",
+ "es": "  [{l}] bloque {c} ({t} líneas)..."},
+"log_chunk_retry": {
+ "en": "  [{l}] block {c}: only {n}/{t} lines — retrying (attempt {a})",
+ "ko": "  [{l}] 묶음 {c}: {t}줄 중 {n}줄만 옴 — 다시 시도 ({a}회차)",
+ "ja": "  [{l}] ブロック {c}: {t}行中 {n}行のみ — 再試行（{a}回目）",
+ "zh": "  [{l}] 分块 {c}：{t} 行中仅 {n} 行 — 重试（第 {a} 次）",
+ "fr": "  [{l}] bloc {c} : {n}/{t} lignes — nouvelle tentative ({a})",
+ "pt": "  [{l}] bloco {c}: {n}/{t} linhas — tentando de novo ({a})",
+ "es": "  [{l}] bloque {c}: {n}/{t} líneas — reintentando ({a})"},
+"log_chunk_retry_ok": {
+ "en": "  [{l}] block {c}: recovered on attempt {a}",
+ "ko": "  [{l}] 묶음 {c}: {a}회차에 성공",
+ "ja": "  [{l}] ブロック {c}: {a}回目で成功",
+ "zh": "  [{l}] 分块 {c}：第 {a} 次成功",
+ "fr": "  [{l}] bloc {c} : réussi à la tentative {a}",
+ "pt": "  [{l}] bloco {c}: recuperado na tentativa {a}",
+ "es": "  [{l}] bloque {c}: recuperado en el intento {a}"},
+"log_chunk_partial": {
+ "en": "  [{l}] block {c}: keeping {n}/{t} lines, rest will be retried later",
+ "ko": "  [{l}] 묶음 {c}: {t}줄 중 {n}줄 확보, 나머지는 뒤에서 보충",
+ "ja": "  [{l}] ブロック {c}: {t}行中 {n}行を確保、残りは後で補完",
+ "zh": "  [{l}] 分块 {c}：保留 {t} 行中的 {n} 行，其余稍后补充",
+ "fr": "  [{l}] bloc {c} : {n}/{t} lignes gardées, le reste plus tard",
+ "pt": "  [{l}] bloco {c}: {n}/{t} linhas mantidas, resto depois",
+ "es": "  [{l}] bloque {c}: {n}/{t} líneas guardadas, el resto después"},
+"log_gap": {
+ "en": "  [{l}] filling {n} missing line(s) — round {r}...",
+ "ko": "  [{l}] 빠진 {n}줄 보충 중 — {r}바퀴...",
+ "ja": "  [{l}] 欠落 {n}行を補完中 — {r}周目...",
+ "zh": "  [{l}] 补充缺失的 {n} 行 — 第 {r} 轮...",
+ "fr": "  [{l}] complément de {n} ligne(s) — tour {r}...",
+ "pt": "  [{l}] preenchendo {n} linha(s) — rodada {r}...",
+ "es": "  [{l}] completando {n} línea(s) — ronda {r}..."},
+"log_pace": {
+ "en": "  waiting {s}s to stay under the {p} rate limit...",
+ "ko": "  {p} 분당 한도를 지키려고 {s}초 대기 중...",
+ "ja": "  {p} のレート制限を守るため {s}秒待機中...",
+ "zh": "  为遵守 {p} 速率限制，等待 {s} 秒...",
+ "fr": "  attente de {s}s pour respecter la limite {p}...",
+ "pt": "  aguardando {s}s para respeitar o limite do {p}...",
+ "es": "  esperando {s}s para respetar el límite de {p}..."},
+"log_engine_switch": {
+ "en": "  model busy or limited — switching to {m}",
+ "ko": "  모델이 붐비거나 한도에 걸림 — {m} 으로 전환",
+ "ja": "  モデルが混雑/制限中 — {m} に切り替え",
+ "zh": "  模型繁忙或受限 — 切换到 {m}",
+ "fr": "  modèle occupé ou limité — passage à {m}",
+ "pt": "  modelo ocupado ou limitado — mudando para {m}",
+ "es": "  modelo ocupado o limitado — cambiando a {m}"},
+"quota_daily": {
+ "en": "daily", "ko": "일일", "ja": "1日", "zh": "每日",
+ "fr": "quotidien", "pt": "diário", "es": "diario"},
+"quota_minute": {
+ "en": "per-minute", "ko": "분당", "ja": "毎分", "zh": "每分钟",
+ "fr": "par minute", "pt": "por minuto", "es": "por minuto"},
+"stage_rebuild": {
+ "en": "Rebuild", "ko": "재조립", "ja": "再構成", "zh": "重组",
+ "fr": "Reconstruction", "pt": "Remontagem", "es": "Reconstrucción"},
+"tag_gap": {
+ "en": "fill{r}", "ko": "보충{r}", "ja": "補完{r}", "zh": "补充{r}",
+ "fr": "compl{r}", "pt": "compl{r}", "es": "compl{r}"},
+"log_quota_hit": {
+ "en": "  [{l}] {c}: API {k} quota reached",
+ "ko": "  [{l}] {c}: API {k} 한도에 걸렸습니다",
+ "ja": "  [{l}] {c}: API {k}制限に達しました",
+ "zh": "  [{l}] {c}：已达 API {k}配额",
+ "fr": "  [{l}] {c} : quota {k} de l'API atteint",
+ "pt": "  [{l}] {c}: cota {k} da API atingida",
+ "es": "  [{l}] {c}: cuota {k} de la API alcanzada"},
+"log_quota_abort": {
+ "en": "  [{l}] API quota exhausted — stopping this stage instead of retrying.\n"
+       "     Retrying now would fail every time. Try again later, or switch to Local AI.",
+ "ko": "  [{l}] API 한도가 소진되어 이 단계를 중단합니다.\n"
+       "     지금 다시 시도해도 계속 실패합니다. 나중에 다시 하시거나 로컬 AI로 바꾸세요.",
+ "ja": "  [{l}] APIの割り当てを使い切ったため、この段階を中止します。\n"
+       "     今再試行しても失敗し続けます。後で試すかローカルAIに切り替えてください。",
+ "zh": "  [{l}] API 配额已用尽，中止此阶段。\n"
+       "     现在重试只会持续失败。请稍后再试或改用本地 AI。",
+ "fr": "  [{l}] Quota API épuisé — arrêt de cette étape.\n"
+       "     Réessayer maintenant échouerait à chaque fois. Réessayez plus tard ou passez à l'IA locale.",
+ "pt": "  [{l}] Cota da API esgotada — interrompendo esta etapa.\n"
+       "     Tentar agora falharia sempre. Tente mais tarde ou mude para IA local.",
+ "es": "  [{l}] Cuota de API agotada — se detiene esta etapa.\n"
+       "     Reintentar ahora fallaría siempre. Inténtalo más tarde o cambia a IA local."},
+"log_still_missing": {
+ "en": "  [{l}] {n} line(s) could not be translated — original kept",
+ "ko": "  [{l}] {n}줄은 끝내 번역하지 못했습니다 — 원문 유지",
+ "ja": "  [{l}] {n}行は翻訳できませんでした — 原文維持",
+ "zh": "  [{l}] {n} 行未能翻译 — 保留原文",
+ "fr": "  [{l}] {n} ligne(s) non traduites — original conservé",
+ "pt": "  [{l}] {n} linha(s) não traduzidas — original mantido",
+ "es": "  [{l}] {n} línea(s) sin traducir — se mantiene el original"},
+"log_chunk_fail": {
+ "en": "  [{l}] block {c} failed — kept as-is: {e}",
+ "ko": "  [{l}] 묶음 {c} 실패 — 원문 유지: {e}",
+ "ja": "  [{l}] ブロック {c} 失敗 — 原文維持: {e}",
+ "zh": "  [{l}] 分块 {c} 失败 — 保留原文：{e}",
+ "fr": "  [{l}] bloc {c} échoué — conservé tel quel : {e}",
+ "pt": "  [{l}] bloco {c} falhou — mantido como está: {e}",
+ "es": "  [{l}] bloque {c} falló — se mantiene igual: {e}"},
+"log_chunk_reject": {
+ "en": "  [{l}] block {c} rejected — only {n} of {t} lines came back (format broken)",
+ "ko": "  [{l}] 묶음 {c} 거부 — {t}줄 중 {n}줄만 돌아옴 (형식 깨짐)",
+ "ja": "  [{l}] ブロック {c} 却下 — {t}行中 {n}行のみ（形式が崩れた）",
+ "zh": "  [{l}] 分块 {c} 拒绝 — {t} 行中仅返回 {n} 行（格式损坏）",
+ "fr": "  [{l}] bloc {c} rejeté — seulement {n} lignes sur {t} (format cassé)",
+ "pt": "  [{l}] bloco {c} rejeitado — só {n} de {t} linhas (formato quebrado)",
+ "es": "  [{l}] bloque {c} rechazado — solo {n} de {t} líneas (formato roto)"},
+"log_chunk_sum": {
+ "en": "  [{l}] {ok} of {n} lines done",
+ "ko": "  [{l}] {n}줄 중 {ok}줄 완료",
+ "ja": "  [{l}] {n}行中 {ok}行完了",
+ "zh": "  [{l}] {n} 行中完成 {ok} 行",
+ "fr": "  [{l}] {ok} lignes sur {n} traitées",
+ "pt": "  [{l}] {ok} de {n} linhas concluídas",
+ "es": "  [{l}] {ok} de {n} líneas completadas"},
+"log_tr_dead": {
+ "en": "Translation produced nothing usable — no file written for this language.",
+ "ko": "번역에서 쓸 만한 결과가 하나도 나오지 않았습니다 — 이 언어는 파일을 만들지 않습니다.",
+ "ja": "翻訳から使える結果が得られませんでした — この言語のファイルは作成しません。",
+ "zh": "翻译没有产生可用结果 — 不会为该语言生成文件。",
+ "fr": "La traduction n'a rien donné d'utilisable — aucun fichier créé pour cette langue.",
+ "pt": "A tradução não produziu nada utilizável — nenhum arquivo criado para este idioma.",
+ "es": "La traducción no produjo nada utilizable — no se creó archivo para este idioma."},
+"log_vram_spill": {
+ "en": "\n⚠ {p}% of the model did not fit on the GPU and moved to system RAM.\n"
+       "  Expect this to run 3-5x slower ({m}, {v} of {t} on GPU).\n",
+ "ko": "\n⚠ 모델의 {p}%가 그래픽카드에 들어가지 못해 본체 메모리로 넘어갔습니다.\n"
+       "  작업이 3~5배 느려집니다 ({m}, GPU에 {t} 중 {v}).\n",
+ "ja": "\n⚠ モデルの{p}%がGPUに収まらずRAMへ退避しました。\n"
+       "  3~5倍遅くなります（{m}、GPU上 {t} 中 {v}）。\n",
+ "zh": "\n⚠ 模型有 {p}% 未能装入显卡，已转到内存。\n"
+       "  速度将下降 3~5 倍（{m}，显存中 {v}/{t}）。\n",
+ "fr": "\n⚠ {p}% du modèle n'est pas entré dans le GPU et est passé en RAM.\n"
+       "  Ce sera 3-5x plus lent ({m}, {v} sur {t} en GPU).\n",
+ "pt": "\n⚠ {p}% do modelo não coube na GPU e foi para a RAM.\n"
+       "  Vai ficar 3-5x mais lento ({m}, {v} de {t} na GPU).\n",
+ "es": "\n⚠ El {p}% del modelo no cupo en la GPU y pasó a la RAM.\n"
+       "  Será 3-5x más lento ({m}, {v} de {t} en GPU).\n"},
+"st_vram": {
+ "en": "⚠ GPU short by {p}% — running slow",
+ "ko": "⚠ GPU 메모리 {p}% 부족 — 느리게 진행 중",
+ "ja": "⚠ GPUメモリ {p}% 不足 — 低速で進行中",
+ "zh": "⚠ 显存不足 {p}% — 正在低速运行",
+ "fr": "⚠ GPU insuffisant de {p}% — exécution lente",
+ "pt": "⚠ GPU {p}% insuficiente — execução lenta",
+ "es": "⚠ GPU {p}% insuficiente — ejecución lenta"},
+"st_cancelling": {
+ "en": "Stopping...", "ko": "멈추는 중...", "ja": "停止中...", "zh": "正在停止...",
+ "fr": "Arrêt...", "pt": "Parando...", "es": "Deteniendo..."},
+"log_cancelling": {
+ "en": "\nStopping — finishing the current step...\n",
+ "ko": "\n멈추는 중 — 진행 중인 단계를 정리합니다...\n",
+ "ja": "\n停止中 — 現在の処理を終了しています...\n",
+ "zh": "\n正在停止 — 结束当前步骤...\n",
+ "fr": "\nArrêt — fin de l'étape en cours...\n",
+ "pt": "\nParando — finalizando a etapa atual...\n",
+ "es": "\nDeteniendo — terminando el paso actual...\n"},
+"vram_title": {
+ "en": "Not enough GPU memory", "ko": "그래픽카드 메모리 부족",
+ "ja": "GPUメモリ不足", "zh": "显存不足",
+ "fr": "Mémoire GPU insuffisante", "pt": "Memória de GPU insuficiente",
+ "es": "Memoria de GPU insuficiente"},
+"vram_msg": {
+ "en": "{p}% of the model ({m}) did not fit on your graphics card and was\n"
+       "moved to system RAM. It still works, but roughly 3-5x slower.\n\n"
+       "What you can do:\n"
+       "  • Close other programs using the GPU (games, browsers, video apps)\n"
+       "  • Settings -> Local AI model: pick a smaller model\n"
+       "  • Use a free Gemini API key instead — much faster than local AI\n\n"
+       "This message is shown once per run.",
+ "ko": "모델({m})의 {p}%가 그래픽카드에 들어가지 못해 본체 메모리로\n"
+       "넘어갔습니다. 작동은 하지만 3~5배 느려집니다.\n\n"
+       "해결 방법:\n"
+       "  • GPU를 쓰는 다른 프로그램을 닫으세요 (게임, 브라우저, 영상 프로그램)\n"
+       "  • 설정 → 로컬 AI 모델에서 더 작은 모델을 고르세요\n"
+       "  • 무료 Gemini API 키를 쓰세요 — 로컬 AI보다 훨씬 빠릅니다\n\n"
+       "이 안내는 실행당 한 번만 표시됩니다.",
+ "ja": "モデル（{m}）の{p}%がGPUに収まらずRAMへ退避しました。\n"
+       "動作はしますが3~5倍遅くなります。\n\n"
+       "対処:\n"
+       "  • GPUを使う他のアプリを閉じる\n"
+       "  • 設定 → ローカルAIモデルで小さいモデルを選ぶ\n"
+       "  • 無料のGemini APIキーを使う（ローカルより大幅に高速）\n\n"
+       "この案内は実行ごとに一度だけ表示されます。",
+ "zh": "模型（{m}）有 {p}% 未装入显卡，已转到内存。\n"
+       "仍可运行，但速度下降约 3~5 倍。\n\n"
+       "解决方法:\n"
+       "  • 关闭其他占用显存的程序（游戏、浏览器、视频软件）\n"
+       "  • 设置 → 本地 AI 模型：选择更小的模型\n"
+       "  • 改用免费 Gemini API 密钥 — 比本地 AI 快得多\n\n"
+       "此提示每次运行只显示一次。",
+ "fr": "{p}% du modèle ({m}) n'est pas entré dans la carte graphique et est\n"
+       "passé en RAM. Cela fonctionne, mais 3-5x plus lentement.\n\n"
+       "Solutions :\n"
+       "  • Fermez les autres programmes utilisant le GPU\n"
+       "  • Paramètres -> Modèle IA locale : choisissez un modèle plus petit\n"
+       "  • Utilisez une clé Gemini gratuite — bien plus rapide\n\n"
+       "Ce message n'apparaît qu'une fois par exécution.",
+ "pt": "{p}% do modelo ({m}) não coube na placa de vídeo e foi para a RAM.\n"
+       "Ainda funciona, mas cerca de 3-5x mais lento.\n\n"
+       "O que fazer:\n"
+       "  • Feche outros programas que usam a GPU\n"
+       "  • Configurações -> Modelo de IA local: escolha um modelo menor\n"
+       "  • Use uma chave Gemini gratuita — muito mais rápida\n\n"
+       "Esta mensagem aparece uma vez por execução.",
+ "es": "El {p}% del modelo ({m}) no cupo en la tarjeta gráfica y pasó a la RAM.\n"
+       "Sigue funcionando, pero unas 3-5x más lento.\n\n"
+       "Qué puedes hacer:\n"
+       "  • Cierra otros programas que usen la GPU\n"
+       "  • Configuración -> Modelo de IA local: elige uno más pequeño\n"
+       "  • Usa una clave gratuita de Gemini — mucho más rápida\n\n"
+       "Este mensaje se muestra una vez por ejecución."},
 })
 
 
@@ -2340,7 +2910,7 @@ def split_by_pauses(entries, log, max_chars=60, max_secs=8.0):
 #    디버깅 근거가 사라지므로 절대 끄지 말 것 (파일 상단 주석 참고).
 # ============================================================================
 
-REBUILD_CHUNK_WORDS = 150      # 한 번에 보내는 단어 수 (문맥 이해와 응답 길이의 절충)
+# (한 번에 보내는 단어 수는 ENGINES 표의 "rebuild_chunk_words" — 엔진마다 다르다)
 REBUILD_MIN_SIMILARITY = 0.70  # 재조립 중 AI 텍스트 보정을 채택할 최소 유사도
 CORRECT_MIN_SIMILARITY = 0.55  # 교정 단계에서 수용할 최소 유사도
                                #  (외국어 -> 한국어 치환은 글자가 통째로 바뀌므로
@@ -2488,13 +3058,14 @@ def rebuild_from_words(entries, provider, api_key, log, extra=""):
     #   ① 컨텍스트가 짧아 프롬프트가 잘릴 위험이 줄고
     #   ② 한 번의 대기가 짧아져 진행이 눈에 보이며
     #   ③ 응답이 형식을 어겨 거부돼도 날아가는 구간이 작다
-    chunk_words = LOCAL_CHUNK_WORDS if provider == "local" else REBUILD_CHUNK_WORDS
+    chunk_words = EOPT(provider, "rebuild_chunk_words")   # v1.3.2: 엔진 표에서
 
     new_entries = []
     total = len(flat)
     base = 0
     block = 0
     while base < total:
+        raise_if_cancelled()      # v1.3: 블록 사이에서도 확인 (안쪽은 스트리밍 루프가 담당)
         block += 1
         count = min(chunk_words, total - base)
         # 묶음 경계가 문장 한가운데를 자르지 않도록, 끝에서 가장 긴 쉼 위치로 살짝 당긴다
@@ -2514,14 +3085,29 @@ def rebuild_from_words(entries, provider, api_key, log, extra=""):
                      "\n\n[참고 초안 — 틀릴 수 있음]\n" + draft)
 
         spans = None
-        try:
-            reply = ai_call(provider, api_key, system, user_text, max_tokens=8000, log=log)
-            spans, why = _parse_rebuild_reply(reply, count)
-            if spans is None:
-                log(T("log_rebuild_reject", c=block, r=why) + "\n")
-        except Exception as ce:
-            log(T("log_rebuild_fail", e=ce) + "\n")
+        if quota_dead():
+            # ★ 한도가 소진됐다. 남은 블록은 호출해 봐야 전부 실패한다.
+            #   조용히 무음 기준 폴백으로 넘긴다 (같은 오류를 수십 번 찍지 않는다).
             spans = None
+        else:
+            try:
+                reply = ai_call(provider, api_key, system, user_text,
+                                max_tokens=8000, log=log)
+                spans, why = _parse_rebuild_reply(reply, count)
+                if spans is None:
+                    log(T("log_rebuild_reject", c=block, r=why) + "\n")
+            except CancelledError:
+                raise        # v1.3: 취소는 실패가 아니다 — 폴백 없이 그대로 올린다
+            except QuotaError as qe:
+                note_quota_fail(provider, qe.daily)
+                log(T("log_quota_hit", l=T("stage_rebuild"), c=block,
+                      k=T("quota_daily") if qe.daily else T("quota_minute")) + "\n")
+                if quota_dead():
+                    log(T("log_quota_abort", l=T("stage_rebuild")) + "\n")
+                spans = None
+            except Exception as ce:
+                log(T("log_rebuild_fail", e=ce) + "\n")
+                spans = None
 
         if spans is None:
             # 이 묶음만 침묵 기준으로 안전하게 처리 (전체를 버리지 않는다)
@@ -2732,12 +3318,199 @@ def build_smi(entries, lang_code):
     return "\r\n".join(lines) + "\r\n"
 
 
+# ---------------- 번호 목록 묶음 처리 (v1.3) ----------------
+#
+#  교정·번역은 둘 다 "번호가 붙은 줄 목록을 주고, 같은 형식으로 돌려받는" 작업이다.
+#  둘이 똑같은 방식으로 실패했으므로(컨텍스트 초과 -> 시스템 프롬프트 소실) 처리도
+#  한 군데로 모은다. 재조립(rebuild_from_words)이 이미 쓰던 방식과 같은 구조다.
+
+def _est_tokens(s):
+    """대략적인 토큰 수. 정확할 필요는 없고 '넘칠 것 같은가'만 알면 된다.
+    한글/한자/가나는 글자당 약 1토큰, 라틴 문자는 3.5글자당 1토큰으로 잡는다."""
+    cjk = 0
+    for ch in s:
+        if ('　' <= ch <= '鿿') or ('가' <= ch <= '힯'):
+            cjk += 1
+    return int(cjk + (len(s) - cjk) / 3.5)
+
+
+def _budget_for(joined, floor=800, cap=8000):
+    """이 묶음의 답변에 필요한 출력 토큰을 어림잡는다.
+
+    v1.2 까지는 항상 8000 을 넘겼다. Ollama 에서 num_ctx 는 '프롬프트 + 생성분'을
+    합친 전체 창이라, 8192 짜리 창에 8000 을 예약하면 입력 자리가 거의 안 남는다.
+    번역·교정 결과는 원문과 길이가 비슷하므로 입력 기준으로 잡는 것이 맞다."""
+    return max(floor, min(cap, int(_est_tokens(joined) * 2.2) + 300))
+
+
+# 모델이 번호를 붙이는 방식이 매번 같지 않다. 아래를 모두 같은 것으로 본다:
+#   "12: text"  "12. text"  "12) text"  "**12:** text"  "- 12: text"  "12 - text"
+# (v1.3 은 'N:' 하나만 받아서, 형식이 조금만 달라도 그 줄을 통째로 놓쳤다.)
+_NUM_LINE = re.compile(
+    r"^\s*[-*>•\s]*(?:\*\*|__)?\s*(\d{1,4})\s*(?:\*\*|__)?\s*[:：.)\]\-–]\s*(.+?)\s*$")
+
+
+def _parse_numbered(text, n):
+    """AI 응답에서 'N: 텍스트' 줄만 뽑아 {번호: 텍스트} 로 돌려준다.
+    번호가 1..n 범위를 벗어나면 버린다(모델이 지어낸 번호 방지)."""
+    got = {}
+    for line in text.split("\n"):
+        s = line.strip()
+        if not s or s.startswith("```"):     # 코드펜스로 감싸는 모델 대비
+            continue
+        m = _NUM_LINE.match(s)
+        if not m:
+            continue
+        k = int(m.group(1))
+        if 1 <= k <= n:
+            v = m.group(2).strip()
+            # '**3:** Hello' 처럼 구분자 뒤에 남는 마크다운 잔여물을 걷어낸다
+            v = re.sub(r"^(?:\*\*|__|\*)\s*", "", v)
+            v = re.sub(r"\s*(?:\*\*|__)$", "", v)
+            v = v.strip().strip('"').strip()
+            if v:
+                got[k] = v
+    return got
+
+
+def _numbered_block(part, provider, api_key, system_fn, log, label, tag,
+                    min_match=NUMBERED_MIN_MATCH, attempts=NUMBERED_RETRIES + 1):
+    """묶음 하나를 처리한다. 형식이 깨지면 다시 시도한다.
+    반환: {묶음내_번호(1부터): 텍스트}  — 부분만 와도 그대로 돌려준다(버리지 않는다)."""
+    n = len(part)
+    joined = "\n".join(f"{i}: {' '.join(e['lines'])}"
+                       for i, e in enumerate(part, 1))
+    best = {}
+    for attempt in range(1, attempts + 1):
+        raise_if_cancelled()
+        try:
+            text = ai_call(provider, api_key, system_fn(n), joined,
+                           max_tokens=_budget_for(joined), log=log)
+        except CancelledError:
+            raise            # 취소는 '묶음 실패'가 아니다 — 그대로 올린다
+        except QuotaError as qe:
+            # ★ 한도 오류는 '이 묶음이 깨졌다'가 아니라 '더는 못 쓴다'는 뜻이다.
+            #   재시도해도 실패가 확정이라, 차단 상태가 되면 단계를 접는다.
+            #   (quota_guard 를 끈 엔진에서는 note_quota_fail 이 항상 False)
+            note_quota_fail(provider, qe.daily)
+            log(T("log_quota_hit", l=label, c=tag,
+                  k=T("quota_daily") if qe.daily else T("quota_minute")) + "\n")
+            if quota_dead():
+                raise
+            continue
+        except Exception as ce:
+            log(T("log_chunk_fail", l=label, c=tag, e=str(ce)[:120]) + "\n")
+            continue
+
+        got = _parse_numbered(text, n)
+        if len(got) > len(best):
+            best = got                       # ★ 부분 성공도 보관해 둔다
+        if len(got) >= n * min_match:
+            if attempt > 1:
+                log(T("log_chunk_retry_ok", l=label, c=tag, a=attempt) + "\n")
+            return got
+        # 기준 미달 — 다시 시도한다. 무작위 실패라 재시도로 대개 해결된다.
+        if attempt < attempts:
+            log(T("log_chunk_retry", l=label, c=tag,
+                  n=len(got), t=n, a=attempt) + "\n")
+    if best:
+        log(T("log_chunk_partial", l=label, c=tag, n=len(best), t=n) + "\n")
+    else:
+        log(T("log_chunk_reject", l=label, c=tag, n=0, t=n) + "\n")
+    return best
+
+
+def _numbered_chunk_call(entries, provider, api_key, system_fn, log,
+                         chunk_lines, label, min_match=NUMBERED_MIN_MATCH):
+    """entries 를 chunk_lines 씩 잘라 'N: 텍스트' 형식으로 AI 에 보낸다.
+
+    반환: ({전역번호(1부터): 결과텍스트}, 처리된_줄수, 전체_줄수)
+
+    ★ 묶음 안에서는 번호를 1..len(part) 로 새로 매긴다.
+      800번대 큰 숫자를 다루게 하면 로컬 모델이 번호를 건너뛰거나 중복시키는 일이 잦다.
+      결과를 담을 때 base 를 더해 전역 번호로 되돌린다.
+
+    ★ system_fn 은 문자열이 아니라 함수다(묶음 줄 수를 받는다).
+      교정 프롬프트에는 "1번부터 N번까지 빠짐없이 있는지 확인하라"는 자기검증 문구가
+      들어 있는데, 쪼갠 뒤에는 그 N 이 묶음마다 달라지기 때문이다.
+
+    ★ 2단계로 돈다.
+      1단계 — 묶음 순서대로. 형식이 깨지면 그 묶음만 다시 시도한다.
+      2단계 — 그래도 빠진 줄이 있으면, 그 줄들만 모아 작은 묶음으로 다시 묻는다.
+              문맥이 짧아지는 손해가 있지만, 원문(한국어)을 그대로 두는 것보다 낫다.
+    """
+    result = {}
+    total = len(entries)
+    if total == 0:
+        return result, 0, 0
+    n_chunks = (total + chunk_lines - 1) // chunk_lines
+
+    batch = EOPT(provider, "gap_fill_batch")
+    aborted = False
+
+    # ---------- 1단계: 순서대로 ----------
+    for ci in range(n_chunks):
+        raise_if_cancelled()
+        base = ci * chunk_lines
+        part = entries[base:base + chunk_lines]
+        log(T("log_chunk", l=label, c=f"{ci + 1}/{n_chunks}", t=len(part)) + "\n")
+        try:
+            got = _numbered_block(part, provider, api_key, system_fn, log,
+                                  label, f"{ci + 1}/{n_chunks}", min_match)
+        except QuotaError:
+            # 한도 소진 — 남은 묶음도 똑같이 실패한다. 여기서 접는다.
+            aborted = True
+            log(T("log_quota_abort", l=label) + "\n")
+            break
+        for k, v in got.items():
+            result[base + k] = v          # 전역 번호로 복원
+
+    # ---------- 2단계: 빠진 줄만 보충 ----------
+    #
+    #  ★ 한도가 소진된 상태에서는 보충을 시도하지 않는다.
+    #    v1.3.1 은 여기서 377줄을 12줄씩 32묶음으로 나눠 전부 재시도했다.
+    #    한 묶음당 2회 × 120초 = 128분을 확정된 실패에 썼다.
+    missing = [i for i in range(1, total + 1) if not result.get(i)]
+    rounds = 0
+    while missing and rounds < GAP_FILL_ROUNDS and not aborted:
+        rounds += 1
+        log(T("log_gap", l=label, n=len(missing), r=rounds) + "\n")
+        for b0 in range(0, len(missing), batch):
+            raise_if_cancelled()
+            idxs = missing[b0:b0 + batch]
+            part = [entries[i - 1] for i in idxs]
+            try:
+                got = _numbered_block(part, provider, api_key, system_fn, log,
+                                      label, T("tag_gap", r=rounds), min_match,
+                                      attempts=2)
+            except QuotaError:
+                aborted = True
+                log(T("log_quota_abort", l=label) + "\n")
+                break
+            for k, v in got.items():
+                result[idxs[k - 1]] = v   # 묶음내 번호 -> 원래 전역 번호
+        before = len(missing)
+        missing = [i for i in range(1, total + 1) if not result.get(i)]
+        if len(missing) >= before:
+            break                          # 더 못 줄이면 그만한다 (무한 반복 방지)
+
+    done = total - len(missing)
+    log(T("log_chunk_sum", l=label, ok=done, n=total) + "\n")
+    if missing:
+        log(T("log_still_missing", l=label, n=len(missing)) + "\n")
+    return result, done, total
+
+
+def _chunk_lines_for(provider):
+    return EOPT(provider, "lines_chunk")                  # v1.3.2: 엔진 표에서
+
+
 # ---------------- Claude 교정 ----------------
 def correct_with_claude(entries, provider, api_key, lang_code, log, extra=""):
     lang_name = LANG_FULLNAME.get(lang_code, "the target language")
 
-    numbered = [f"{i}: {' '.join(e['lines'])}" for i, e in enumerate(entries, 1)]
-    joined = "\n".join(numbered)
+    # v1.3: 여기서 전체를 하나의 문자열로 합치지 않는다.
+    #       _numbered_chunk_call 이 묶음별로 만들어 보낸다.
 
     extra_clause = ""
     if extra.strip():
@@ -2747,35 +3520,37 @@ def correct_with_claude(entries, provider, api_key, lang_code, log, extra=""):
     # v1.2: 이 단계는 rebuild_from_words 로 문장이 온전해진 "뒤에" 돈다.
     #       토막난 자막이 아니라 완성된 문장을 보므로 문맥 판단이 훨씬 정확하다.
     #       순서를 되돌리지 말 것 (재조립 -> 교정 -> 번역).
-    system = (
-        f"You are a subtitle proofreader. The subtitles should be entirely in {lang_name}. "
-        f"Each line is a complete sentence, already split correctly — judge each line "
-        f"in the context of the lines around it. "
-        f"Some lines contain foreign words that were mis-transcribed and "
-        f"should be in {lang_name} instead, or contain small transcription errors. "
-        f"{extra_clause}"
-        f"Fix ONLY: foreign words that should be {lang_name}, clearly mis-heard names or "
-        f"terms, obvious typos, and spacing. "
-        f"When unsure, prefer leaving text unchanged. "
-        f"Do NOT change meaning, do NOT merge or split lines, "
-        f"do NOT add or remove lines. Keep the exact same number of lines. "
-        f"Return ONLY the corrected lines in the SAME numbered format 'N: text', nothing else."
-        f"\n\nBEFORE YOU ANSWER — check your own output:\n"
-        f"  (a) Does your reply contain every number from 1 to {len(entries)}, exactly once?\n"
-        f"  (b) Did any line change meaning, or get reworded beyond a genuine transcription fix?\n"
-        f"  (c) Did you accidentally merge, split, reorder or drop a line?\n"
-        f"Fix any problems, then output only the final list. Do not show your checking."
-    )
-    log(T("log_api_call", p=PROVIDERS[provider]["name"]) + "\n")
-    text = ai_call(provider, api_key, system, joined, max_tokens=8000, log=log)
+    # v1.3: 묶음마다 줄 수가 다르므로 시스템 프롬프트를 그때그때 만든다.
+    def system_fn(n):
+        return (
+            f"You are a subtitle proofreader. The subtitles should be entirely in {lang_name}. "
+            f"Each line is a complete sentence, already split correctly — judge each line "
+            f"in the context of the lines around it. "
+            f"Some lines contain foreign words that were mis-transcribed and "
+            f"should be in {lang_name} instead, or contain small transcription errors. "
+            f"{extra_clause}"
+            f"Fix ONLY: foreign words that should be {lang_name}, clearly mis-heard names or "
+            f"terms, obvious typos, and spacing. "
+            f"When unsure, prefer leaving text unchanged. "
+            f"Do NOT change meaning, do NOT merge or split lines, "
+            f"do NOT add or remove lines. Keep the exact same number of lines. "
+            f"You will be given exactly {n} numbered lines. "
+            f"Return ONLY the corrected lines in the SAME numbered format 'N: text', nothing else."
+            f"\n\nBEFORE YOU ANSWER — check your own output:\n"
+            f"  (a) Does your reply contain every number from 1 to {n}, exactly once?\n"
+            f"  (b) Did any line change meaning, or get reworded beyond a genuine transcription fix?\n"
+            f"  (c) Did you accidentally merge, split, reorder or drop a line?\n"
+            f"Fix any problems, then output only the final list. Do not show your checking."
+        )
 
-    corrected = {}
-    for line in text.split("\n"):
-        m = re.match(r"\s*(\d+)\s*[:：]\s*(.*)$", line)
-        if m:
-            corrected[int(m.group(1))] = m.group(2).strip()
+    log(T("log_api_call", p=PROVIDERS[provider]["name"]) + "\n")
+    corrected, n_done, n_total = _numbered_chunk_call(
+        entries, provider, api_key, system_fn, log,
+        chunk_lines=_chunk_lines_for(provider), label=lang_name)
 
     # v1.2: 응답이 일부만 와도 조용히 넘어가지 않고 경고를 남긴다.
+    # v1.3: 교정은 '선택적 다듬기'이므로 실패해도 예외를 올리지 않는다.
+    #       재조립 결과를 그대로 쓰는 것이 맞다. 다만 로그에는 반드시 남긴다.
     if len(corrected) < len(entries):
         log(T("log_correct_lines_bad", n=len(corrected), t=len(entries)) + "\n")
 
@@ -2800,38 +3575,52 @@ def translate_with_claude(src_entries, provider, api_key, target_code, log, extr
     """기준 자막을 target_code 언어로 번역 (타이밍/줄 수 유지, 텍스트만 교체)."""
     target_name = LANG_FULLNAME.get(target_code, target_code)
 
-    numbered = [f"{i}: {' '.join(e['lines'])}" for i, e in enumerate(src_entries, 1)]
-    joined = "\n".join(numbered)
-
     extra_clause = ""
     if extra.strip():
         extra_clause = ("OPERATOR PREFERENCES — the person running this tool added the following instructions. Apply them ONLY where they do not conflict with the strict formatting rules in this prompt (never change the number of lines, never reorder lines, keep timing untouched): "
                         + extra.strip() + " -- END OF OPERATOR PREFERENCES. ")
 
-    system = (
-        f"You are a professional subtitle translator for a children's educational animation. "
-        f"Translate each {source_name} subtitle line into natural, age-appropriate {target_name}. "
-        f"{extra_clause}"
-        f"These are subtitles including song lyrics and dialogue — keep translations concise "
-        f"so they fit on screen, natural for children, and matching the tone of the original. "
-        f"For song lyrics, prioritize natural {target_name} phrasing over literal word-for-word. "
-        f"Do NOT merge or split lines, do NOT add or remove lines. "
-        f"Keep the EXACT same number of lines and the same line numbers. "
-        f"Return ONLY the translated lines in the SAME numbered format 'N: text', nothing else."
-    )
-    log(T("log_tr_call", l=target_name) + "\n")
-    text = ai_call(provider, api_key, system, joined, max_tokens=8000, log=log)
+    def system_fn(n):
+        return (
+            f"You are a professional subtitle translator for a children's educational animation. "
+            f"Translate each {source_name} subtitle line into natural, age-appropriate {target_name}. "
+            f"{extra_clause}"
+            f"These are subtitles including song lyrics and dialogue — keep translations concise "
+            f"so they fit on screen, natural for children, and matching the tone of the original. "
+            f"For song lyrics, prioritize natural {target_name} phrasing over literal word-for-word. "
+            f"Do NOT merge or split lines, do NOT add or remove lines. "
+            f"You will be given exactly {n} numbered lines. "
+            f"Keep the EXACT same number of lines and the same line numbers. "
+            f"Return ONLY the translated lines in the SAME numbered format 'N: text', nothing else."
+            f"\n\nBEFORE YOU ANSWER — check that your reply contains every number "
+            f"from 1 to {n}, exactly once, each followed by {target_name} text. "
+            f"Do not show your checking."
+        )
 
-    translated = {}
-    for line in text.split("\n"):
-        m = re.match(r"\s*(\d+)\s*[:：]\s*(.*)$", line)
-        if m:
-            translated[int(m.group(1))] = m.group(2).strip()
+    log(T("log_tr_call", l=target_name) + "\n")
+    translated, n_done, n_total = _numbered_chunk_call(
+        src_entries, provider, api_key, system_fn, log,
+        chunk_lines=_chunk_lines_for(provider), label=target_name)
+
+    # ---------------------------------------------------------------
+    # ★ v1.3: 한 묶음도 못 건졌으면 예외를 올린다. 절대 원문을 돌려주지 말 것.
+    #
+    #   v1.2 는 매칭이 0줄이어도 원문을 그대로 반환했고, 호출부는 그것을 성공으로
+    #   보고 저장했다. 그래서 한국어가 그대로 담긴 파일이 '_en.srt' 라는 이름으로
+    #   만들어졌다. 사용자는 파일이 생긴 것을 보고 성공한 줄 안다 —
+    #   그냥 실패하는 것보다 나쁘다. 호출부의 except 는 이미 올바르게 짜여 있으니
+    #   여기서 실패를 실패라고 말해 주기만 하면 된다.
+    # ---------------------------------------------------------------
+    raise_if_cancelled()      # v1.3: 취소를 '번역 실패'로 잘못 보고하지 않도록 먼저 확인
+    if n_done == 0:
+        log(T("log_tr_dead") + "\n")
+        raise RuntimeError(
+            f"translation produced no usable lines (0 of {n_total})")
 
     out = []
     for i, e in enumerate(src_entries, 1):
         new_e = {k: v for k, v in e.items()}
-        if i in translated and translated[i]:
+        if translated.get(i):
             new_e["lines"] = [translated[i]]
         out.append(new_e)
     missing = len(src_entries) - len(translated)
@@ -2842,12 +3631,26 @@ def translate_with_claude(src_entries, provider, api_key, target_code, log, extr
 
 
 # ---------------- AI API 호출 (v1.1: Gemini/Qwen/Claude 공용, SDK 없이 REST) ----------------
-def _post_json(url, payload, headers, timeout=180, log=None, retries=3):
-    """POST 요청. 429(무료 한도 초과)·일시적 5xx는 대기 후 자동 재시도."""
+class HttpFail(RuntimeError):
+    """HTTP 오류. code 를 보고 '다음 모델로 넘길지'를 판단할 수 있게 담아 둔다."""
+    def __init__(self, code, msg):
+        super().__init__(msg)
+        self.code = code
+
+
+def _post_json(url, payload, headers, timeout=180, log=None, retries=3,
+               provider=None):
+    """POST 요청. 일시적 오류는 대기 후 자동 재시도.
+
+    v1.3.2: provider 를 받아 엔진별 정책(재시도 대상 코드, 한도 처리)을 따른다.
+            provider=None 이면 v1.3.1과 똑같이 동작한다."""
     import urllib.request
     import urllib.error
     data = json.dumps(payload).encode("utf-8")
     waits = [20, 40, 60]  # 재시도 대기(초) — 무료 티어 분당 한도 회복용
+    retry_codes = (EOPT(provider, "retry_codes") if provider
+                   else (429, 500, 502, 503, 529))
+    guard = bool(provider) and EOPT(provider, "quota_guard")
     last_err = None
     for attempt in range(retries + 1):
         req = urllib.request.Request(url, data=data, headers=headers, method="POST")
@@ -2860,8 +3663,25 @@ def _post_json(url, payload, headers, timeout=180, log=None, retries=3):
                 body = e.read().decode(errors="ignore")[:300]
             except Exception:
                 pass
-            last_err = RuntimeError(f"{e.code} {e.reason}: {body}")
-            if e.code in (429, 500, 502, 503, 529) and attempt < retries:
+            last_err = HttpFail(e.code, f"{e.code} {e.reason}: {body}")
+
+            # ---- 한도 오류: quota_guard 를 켠 엔진에서만 특별 취급 ----------
+            #   ★ 이 분기는 Gemini 에만 들어온다. Claude 는 표에서 꺼져 있고,
+            #     로컬은 애초에 _post_json 을 쓰지 않는다(스트리밍을 쓴다).
+            if guard and e.code == 429:
+                if _is_daily_quota(body):
+                    # 일일 한도 — 20/40/60초를 기다려도 오늘은 안 풀린다.
+                    # 기다리는 것 자체가 순손해라 바로 올린다.
+                    raise QuotaError(f"429 daily quota: {body}", daily=True) from None
+                if attempt < retries:
+                    w = waits[min(attempt, len(waits) - 1)]
+                    if log:
+                        log(T("log_rate_wait", s=w, i=attempt + 1, n=retries) + "\n")
+                    time.sleep(w)
+                    continue
+                raise QuotaError(f"429 rate limit: {body}", daily=False) from None
+
+            if e.code in retry_codes and attempt < retries:
                 w = waits[min(attempt, len(waits) - 1)]
                 if log:
                     log(T("log_rate_wait", s=w, i=attempt + 1, n=retries) + "\n")
@@ -2875,58 +3695,110 @@ def _post_json(url, payload, headers, timeout=180, log=None, retries=3):
     raise last_err
 
 
-def ai_call(provider, api_key, system, user_text, max_tokens=8000, log=None):
-    """선택된 AI 엔진으로 system+user 요청을 보내고 텍스트 응답을 돌려준다.
-    (429 등 일시 오류는 _post_json에서 자동 재시도)"""
-    if provider == "claude":
-        data = _post_json(
-            "https://api.anthropic.com/v1/messages",
-            {"model": PROVIDERS["claude"]["model"], "max_tokens": max_tokens,
-             "system": system,
-             "messages": [{"role": "user", "content": user_text}]},
-            {"x-api-key": api_key, "anthropic-version": "2023-06-01",
-             "content-type": "application/json"}, log=log)
-        return "".join(b.get("text", "") for b in data.get("content", [])
-                       if b.get("type") == "text")
+# =============================================================================
+#  엔진별 호출 함수
+#
+#  ★ 각 함수는 자기 엔진만 안다. 다른 엔진을 신경 쓰지 않는다.
+#    새 엔진을 붙일 때는 아래 형식으로 함수 하나를 더 쓰고
+#    ENGINES 표에 항목을 추가하면 끝이다.
+#
+#    시그니처:  fn(api_key, system, user_text, max_tokens, log) -> str
+# =============================================================================
 
-    if provider == "gemini":
-        # 무료 티어 모델명이 구형화되면(404) 다음 후보를 자동으로 시도
-        models = PROVIDERS["gemini"]["models"]
-        if _GEMINI_OK_MODEL["name"]:
-            models = [_GEMINI_OK_MODEL["name"]] + [m for m in models
-                                                  if m != _GEMINI_OK_MODEL["name"]]
-        last = None
-        for mi, model in enumerate(models):
+@engine_call("claude")
+def _call_claude(api_key, system, user_text, max_tokens, log=None):
+    """Anthropic Messages API. 유료라 한도가 넉넉해 간격·차단기가 없다."""
+    data = _post_json(
+        "https://api.anthropic.com/v1/messages",
+        {"model": ENGINES["claude"]["model"], "max_tokens": max_tokens,
+         "system": system,
+         "messages": [{"role": "user", "content": user_text}]},
+        {"x-api-key": api_key, "anthropic-version": "2023-06-01",
+         "content-type": "application/json"},
+        log=log, provider="claude")
+    return "".join(b.get("text", "") for b in data.get("content", [])
+                   if b.get("type") == "text")
+
+
+@engine_call("gemini")
+def _call_gemini(api_key, system, user_text, max_tokens, log=None):
+    """Google Generative Language API.
+
+    ★ 대체 모델 전환 조건이 v1.3.1보다 넓다.
+      예전에는 404(모델 없음)에서만 다음 후보로 넘어갔다. 그래서
+      gemini-3-flash 가 503(과부하)이면 2.5-flash 는 멀쩡한데도 그냥 죽었다.
+      이제 fallback_codes(404/429/5xx) 전부에서 다음 후보를 시도한다.
+
+    ★ 한 번 성공한 모델은 _GEMINI_OK_MODEL 에 기억해 다음부터 먼저 쓴다."""
+    models = list(EOPT("gemini", "models") or [ENGINES["gemini"]["model"]])
+    if _GEMINI_OK_MODEL["name"] in models:
+        models = ([_GEMINI_OK_MODEL["name"]] +
+                  [m for m in models if m != _GEMINI_OK_MODEL["name"]])
+    fallback = EOPT("gemini", "fallback_codes")
+    last = None
+    for mi, model in enumerate(models):
+        has_next = mi + 1 < len(models)
+        try:
+            data = _post_json(
+                f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent",
+                {"systemInstruction": {"parts": [{"text": system}]},
+                 "contents": [{"role": "user", "parts": [{"text": user_text}]}],
+                 "generationConfig": {"maxOutputTokens": max_tokens}},
+                {"x-goog-api-key": api_key, "content-type": "application/json"},
+                log=log, provider="gemini")
+            _GEMINI_OK_MODEL["name"] = model
             try:
-                data = _post_json(
-                    f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent",
-                    {"systemInstruction": {"parts": [{"text": system}]},
-                     "contents": [{"role": "user", "parts": [{"text": user_text}]}],
-                     "generationConfig": {"maxOutputTokens": max_tokens}},
-                    {"x-goog-api-key": api_key, "content-type": "application/json"}, log=log)
-                _GEMINI_OK_MODEL["name"] = model
-                try:
-                    return "".join(pt.get("text", "")
-                                   for pt in data["candidates"][0]["content"]["parts"])
-                except (KeyError, IndexError):
-                    raise RuntimeError(f"unexpected Gemini response: {str(data)[:200]}")
-            except RuntimeError as e:
-                last = e
-                if str(e).startswith("404") and mi + 1 < len(models):
-                    continue  # 다음 모델 후보 시도
-                raise
-        raise last
+                return "".join(pt.get("text", "")
+                               for pt in data["candidates"][0]["content"]["parts"])
+            except (KeyError, IndexError):
+                raise RuntimeError(f"unexpected Gemini response: {str(data)[:200]}")
 
-    if provider == "local":
-        # v1.2: 스트리밍으로 받는다.
-        #   이전에는 통짜 POST(timeout=180)라 응답이 다 올 때까지 화면이 완전히 멈춰 있었고,
-        #   느린 GPU에서 180초를 넘기면 "서버에 연결할 수 없음"이라는 엉뚱한 에러가 났다.
-        #   스트리밍이면 토큰이 오는 동안 계속 살아 있으므로 총 소요 시간 제한이 사라지고,
-        #   로그에 진행 상황을 실시간으로 보여줄 수 있다.
-        return _local_chat_stream(system, user_text, max_tokens, log=log,
-                                  read_timeout=LOCAL_READ_TIMEOUT)
+        except QuotaError as qe:
+            last = qe
+            # 일일 한도는 모델을 바꿔도 같은 프로젝트 할당량이라 소용없다.
+            # 분당 한도는 모델별로 따로 세므로 다음 후보를 시도해 볼 만하다.
+            if (not qe.daily) and has_next:
+                if log:
+                    log(T("log_engine_switch", m=models[mi + 1]) + "\n")
+                pace_engine("gemini", log)
+                continue
+            raise
+        except HttpFail as he:
+            last = he
+            if he.code in fallback and has_next:
+                if log:
+                    log(T("log_engine_switch", m=models[mi + 1]) + "\n")
+                pace_engine("gemini", log)
+                continue
+            raise
+    raise last
 
-    raise ValueError(f"unknown provider: {provider}")
+
+@engine_call("local")
+def _call_local(api_key, system, user_text, max_tokens, log=None):
+    """Ollama /api/chat 스트리밍.
+
+    v1.2: 통짜 POST(timeout=180)는 응답이 다 올 때까지 화면이 멈췄고, 느린
+    GPU에서 180초를 넘기면 "서버에 연결할 수 없음"이라는 엉뚱한 에러가 났다.
+    스트리밍이면 총 시간 제한이 사라지고 진행 상황도 실시간으로 보인다.
+    (api_key 는 쓰지 않는다 — 내 컴퓨터에서 돌기 때문)"""
+    return _local_chat_stream(system, user_text, max_tokens, log=log,
+                              read_timeout=LOCAL_READ_TIMEOUT)
+
+
+def ai_call(provider, api_key, system, user_text, max_tokens=8000, log=None):
+    """엔진 이름으로 호출 함수를 찾아 넘긴다.
+
+    ★ 여기에 `if provider == ...` 를 추가하지 말 것.
+      엔진별 처리는 각 호출 함수 안에, 엔진별 값은 ENGINES 표에 둔다."""
+    fn = ENGINE_CALLS.get(provider)
+    if fn is None:
+        raise ValueError(f"unknown engine: {provider}")
+    cap = EOPT(provider, "max_tokens_cap")
+    pace_engine(provider, log)          # min_interval=0 인 엔진은 그냥 통과한다
+    out = fn(api_key, system, user_text, min(max_tokens, cap), log=log)
+    note_quota_ok()                     # 성공했으니 연속 실패 기록을 지운다
+    return out
 
 
 def _human_bytes(n):
@@ -3054,6 +3926,12 @@ def _local_chat_stream(system, user_text, max_tokens, log=None, read_timeout=180
     last_tick = 0.0
     for msg in _stream_ndjson(f"{OLLAMA_URL}/api/chat", payload,
                               read_timeout, log=log, stall_key="log_local_stall"):
+        # ★ v1.3: 취소 확인은 여기가 가장 중요한 자리다.
+        #   글자가 하나씩 들어올 때마다 확인하므로 멈춤을 누르면 1초 안에 반응한다.
+        #   바깥 루프에만 두면 이 호출(최대 100초)이 끝날 때까지 기다려야 한다.
+        #   for 문을 빠져나가면 제너레이터가 정리되며 연결도 닫힌다.
+        if is_cancelled():
+            raise CancelledError("cancelled during local AI generation")
         if msg.get("error"):
             raise RuntimeError(str(msg["error"])[:200])
         piece = (msg.get("message") or {}).get("content") or ""
@@ -3077,9 +3955,75 @@ def _local_chat_stream(system, user_text, max_tokens, log=None, read_timeout=180
     if log:
         log("\r" + T("log_local_gen_done", n=len(out), s=f"{time.time() - t0:.0f}"))
         log("")   # 진행률 줄 마무리 (다음 일반 로그가 줄바꿈을 넣어 준다)
+        check_local_vram(log)   # v1.3: 실행당 한 번, 모델이 GPU 밖으로 밀렸는지 확인
     if not out:
         raise RuntimeError("local AI returned an empty response")
     return out
+
+
+# ---------------- GPU 메모리 실측 경고 (v1.3) ----------------
+#
+#  ★ 그래픽카드 용량을 보고 '추측'하지 않는다.
+#    카드가 몇 GB인지는 알아도, 그 순간 게임·브라우저가 얼마를 쓰고 있는지는 모른다.
+#    8GB 카드가 멀쩡히 돌아갈 수도 있고, 16GB 카드가 밀려날 수도 있다.
+#    Ollama 는 모델을 올린 뒤 "전체 중 얼마를 GPU에 올렸는지"를 알려준다.
+#    추측 대신 그 실측값을 쓴다.
+#
+#  왜 필요한가: Ollama 는 모델이 VRAM 에 안 들어가면 에러를 내지 않는다.
+#  일부 레이어를 조용히 본체 메모리로 넘기고 계속 돌린다. 사용자 눈에는
+#  "되긴 하는데 이유 없이 3~5배 느린" 상태로만 보인다. 그 침묵을 깨는 것이 목적이다.
+
+_VRAM_STATE = {"checked": False, "spilled": False, "pct": 0,
+               "model": "", "vram": "", "total": ""}
+
+
+def check_local_vram(log=None, force=False):
+    """Ollama 에 올라간 모델이 GPU 안에 다 들어갔는지 확인한다.
+    실행당 한 번만 검사한다(force=True 면 다시 검사).
+    반환: True = 밀려남(느려짐), False = 정상 또는 확인 불가."""
+    if _VRAM_STATE["checked"] and not force:
+        return _VRAM_STATE["spilled"]
+    _VRAM_STATE["checked"] = True
+
+    import urllib.request
+    try:
+        with urllib.request.urlopen(f"{OLLAMA_URL}/api/ps", timeout=5) as resp:
+            data = json.loads(resp.read().decode("utf-8", "replace"))
+    except Exception:
+        return False        # 확인 못 했으면 조용히 넘어간다 (경고를 지어내지 않는다)
+
+    want = (LOCAL_MODEL["name"] or "").strip()
+    stem = want.split(":")[0]
+    entry = None
+    for m in (data.get("models") or []):
+        nm = (m.get("model") or m.get("name") or "")
+        if nm == want or nm.startswith(stem):
+            entry = m
+            break
+    if not entry:
+        return False
+
+    total = int(entry.get("size") or 0)
+    vram = int(entry.get("size_vram") or 0)
+    if total <= 0:
+        return False
+
+    # 5% 미만 차이는 계산 버퍼 등 정상 오차로 본다
+    spilled_ratio = 1.0 - (vram / float(total))
+    if spilled_ratio < 0.05:
+        return False
+
+    _VRAM_STATE.update({
+        "spilled": True,
+        "pct": int(round(spilled_ratio * 100)),
+        "model": want,
+        "vram": _human_bytes(vram),
+        "total": _human_bytes(total),
+    })
+    if log:
+        log(T("log_vram_spill", p=_VRAM_STATE["pct"], m=want,
+              v=_VRAM_STATE["vram"], t=_VRAM_STATE["total"]))
+    return True
 
 
 
@@ -3652,8 +4596,8 @@ class App:
             self.prov_combo.pack(side="left", padx=(6, 0))
             self.prov_combo.bind("<<ComboboxSelected>>", self.on_provider_changed)
             self.key_entry = None
-            if self.ai_provider == "local":
-                # 로컬 AI: 키 불필요 — 상태 표시 + 설치/시작/다운로드 버튼
+            if not EOPT(self.ai_provider, "needs_key"):
+                # 키가 필요 없는 엔진(현재 로컬 AI): 키 칸 대신 상태/설치 버튼
                 self._local_state, _info = local_status()
                 self.local_btn = None
                 if self._local_state != "ready":
@@ -3965,8 +4909,8 @@ class App:
     def update_key_hint(self):
         if not self.use_claude.get():
             return  # 끔 상태에서는 힌트 라벨 자체가 없음
-        if self.ai_provider == "local" or self.key_entry is None:
-            return  # 로컬 AI는 build_ui에서 상태를 직접 표시
+        if (not EOPT(self.ai_provider, "needs_key")) or self.key_entry is None:
+            return  # 키가 없는 엔진은 build_ui에서 상태를 직접 표시한다
         if self.api_key.get().strip():
             self.key_hint.configure(text=T("hint_on", p=PROVIDERS[self.ai_provider]["name"]),
                                     foreground="#2e7d32")
@@ -4166,6 +5110,11 @@ class App:
         txt = T("st_remaining", p=f"{pct:.0f}", t=eta_text)
         if self._cur_file:
             txt = f"{self._cur_file}   ·   {txt}"  # v4.12: 현재 파일 표시
+        # v1.3: GPU 밖으로 밀린 상태면 상태줄에 계속 띄워 둔다.
+        #   진행률이 갱신될 때마다 다시 붙으므로 작업 내내 보인다.
+        #   팝업과 달리 창을 잠그지 않아, 보고서 직접 멈출 수 있다.
+        if _VRAM_STATE.get("spilled"):
+            txt = T("st_vram", p=_VRAM_STATE["pct"]) + "   ·   " + txt
         self.status.configure(text=txt)
         self.root.update_idletasks()
 
@@ -4178,7 +5127,9 @@ class App:
     def cancel(self):
         self.cancel_flag = True
         self.write_log("\n" + T("log_cancel_req") + "\n")
+        self.write_log(T("log_cancelling"))
         self.cancel_btn.configure(state="disabled")
+        self.status.configure(text=T("st_cancelling"))
 
     # ----- 생성 -----
     def start_generate(self):
@@ -4211,6 +5162,13 @@ class App:
         self.lock(True)
         self.progress["value"] = 0
         self.status.configure(text=T("st_preparing"))
+        # v1.3: GPU 메모리 경고는 '실행당 한 번'이다. 새 실행이니 상태를 되돌린다.
+        _VRAM_STATE.update({"checked": False, "spilled": False, "pct": 0})
+        self._vram_popup_shown = False
+        reset_quota_state()          # v1.3.2: 지난 실행의 한도 상태를 지운다
+        _LAST_CALL.clear()           #          요청 간격 기록도 초기화
+        # v1.3: 안쪽 루프(스트리밍·재조립·묶음)가 취소를 즉시 알아채도록 훅을 등록한다.
+        set_cancel_check(lambda: self.cancel_flag)
         threading.Thread(target=self.generate,
                          args=(files, selected, self.audio_lang_code), daemon=True).start()
 
@@ -4230,8 +5188,10 @@ class App:
             use_ai = self.use_claude.get()
             prov = self.ai_provider
             key = self.api_key.get().strip() if use_ai else ""
-            if use_ai and prov == "local":
-                key = "local"  # 로컬 AI는 키가 필요 없음
+            if use_ai and not EOPT(prov, "needs_key"):
+                # 키가 필요 없는 엔진. 아래 코드가 key 의 참/거짓으로 'AI 사용 가능'을
+                # 판단하므로, 빈 문자열이 아닌 자리표시자를 넣어 준다.
+                key = key or "-"
 
             out_paths = []
             errors = []   # v4.6: (파일명, 에러 요약, 힌트 i18n 키 or None)
@@ -4380,6 +5340,8 @@ class App:
                             src_entries = rebuild_from_words(
                                 src_entries, prov, key, self.write_log,
                                 extra=self.get_extra())
+                        except CancelledError:
+                            raise      # v1.3: 취소는 실패가 아니다 — 폴백 없이 올린다
                         except Exception as se:
                             self.write_log(T("log_rebuild_fail", e=se) + "\n")
                             try:
@@ -4391,6 +5353,8 @@ class App:
                         try:
                             src_entries = correct_with_claude(src_entries, prov, key, base_code, self.write_log,
                                                               extra=self.get_extra())
+                        except CancelledError:
+                            raise
                         except Exception as ce:
                             self.write_log(T("log_correct_fail", e=ce) + "\n")
                     else:
@@ -4402,6 +5366,11 @@ class App:
                             src_entries = split_by_pauses(src_entries, self.write_log)
                         except Exception as pe:
                             self.write_log(T("log_pause_fail", e=pe) + "\n")
+
+                    # v1.3: AI 단계는 오래 걸린다. 끝나자마자 취소 여부를 확인한다.
+                    #       취소했는데 반쪽짜리 자막을 저장하면 안 된다.
+                    if self.cancel_flag:
+                        break
 
                     # 최종 자막 기준으로 끝 1초 지연 적용 (겹침 방지)
                     src_entries = apply_trailing_delay(src_entries, extra=1.0)
@@ -4445,6 +5414,8 @@ class App:
                             tr_entries = translate_with_claude(src_entries, prov, key, code, self.write_log,
                                                                extra=self.get_extra(),
                                                                source_name=source_name)
+                        except CancelledError:
+                            break      # v1.3: 취소 — 이 언어 파일은 만들지 않는다
                         except Exception as te:
                             self.write_log(T("log_tr_fail", l=lang_lbl, e=te) + "\n")
                             units_done += 1
@@ -4473,6 +5444,10 @@ class App:
 
 
                     n_ok += 1
+                except CancelledError:
+                    # v1.3: 취소는 오류 목록에 넣지 않는다. 요약에 '실패'로 뜨면 안 된다.
+                    self.cancel_flag = True
+                    break
                 except Exception as fe:
                     msg = str(fe)
                     self.write_log("\n" + T("t_error") + f": {msg}\n")
@@ -4512,6 +5487,9 @@ class App:
                 if (not self.donate_never) and self.files_done >= self.donate_next:
                     self.root.after(600, self.show_donate_popup)
             self.root.after(0, self.notify_done)  # v4.12: 완료 알림
+            # v1.3: GPU 메모리 경고 팝업은 '작업이 다 끝난 뒤'에 띄운다.
+            #       작업 중에 띄우면 모달이라 창이 잠겨, 정작 멈춤 버튼을 못 누른다.
+            self.root.after(900, self.maybe_warn_vram)
             if out_paths:
                 self.root.after(0, lambda: self.open_folder(out_paths[0]))
         except Exception as e:
@@ -4519,7 +5497,24 @@ class App:
             self.root.after(0, lambda: messagebox.showerror(T("t_error"), str(e)))
         finally:
             self._cur_file = ""
+            set_cancel_check(None)          # v1.3: 훅 해제
             self.root.after(0, lambda: self.lock(False))
+
+    def maybe_warn_vram(self):
+        """v1.3: 모델이 GPU 밖으로 밀렸으면 실행당 한 번 알린다.
+
+        ★ 작업 중에는 띄우지 않는다.
+          messagebox 는 모달이라 창이 잠긴다. "3~5배 느립니다"를 알리려던 팝업이
+          정작 멈춤 버튼을 못 누르게 막아 버린다. 작업 중에는 로그와 상태줄로만
+          보여 주고(사용자가 보고 직접 멈출 수 있다), 팝업은 끝난 뒤에 띄운다."""
+        if not _VRAM_STATE.get("spilled"):
+            return
+        if getattr(self, "_vram_popup_shown", False):
+            return
+        self._vram_popup_shown = True
+        messagebox.showwarning(
+            T("vram_title"),
+            T("vram_msg", p=_VRAM_STATE["pct"], m=_VRAM_STATE["model"]))
 
     def show_donate_popup(self):
         """1.0: 누적 자막 수 마일스톤(10 -> 50 -> 250...)마다 딱 한 번 뜨는 후원 안내.
