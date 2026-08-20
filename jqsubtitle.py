@@ -82,7 +82,7 @@ _register_nvidia_dll_dirs()
 
 APP_NAME = "JQSubtitle"
 APP_FULL = "Just Quality AI Subtitle Maker"
-VERSION = "1.3.2"
+VERSION = "1.3.3"
 COPYRIGHT = "© 2026 JQ Park · MIT License"
 GITHUB_URL = "https://github.com/i3luegirl/jqsubtitle"
 ISSUES_URL = GITHUB_URL + "/issues"
@@ -173,16 +173,44 @@ ENGINES = {
     # ---------------------------------------------------------------- Gemini
     "gemini": {
         "name": "Gemini",
-        # 무료 티어 모델명은 구형화가 잦다. 앞에서부터 순서대로 시도한다.
-        "models": ["gemini-3-flash", "gemini-flash-latest", "gemini-2.5-flash",
-                   "gemini-2.0-flash"],
-        "model": "gemini-3-flash",
+        # ---- 모델 후보 (2026-08-20 갱신) --------------------------------
+        #  ★ 구글이 모델을 자주 은퇴시킨다. 목록 전체가 죽는 사고가 실제로 났다.
+        #
+        #    2026-08-20 사고: 목록 4개 중 3개가 404 였다.
+        #      gemini-3-flash   404
+        #      gemini-2.5-flash 404
+        #      gemini-2.0-flash 404 — 구글이 응답으로 직접 알려 줬다:
+        #        "no longer available. Please update your code to use
+        #         models/gemini-3.6-flash"
+        #    살아 있는 건 gemini-flash-latest 하나뿐이었고 그마저 한도에 걸려,
+        #    재조립이 통째로 무음 폴백으로 떨어졌다.
+        #
+        #  ★ 1순위는 반드시 gemini-flash-latest.
+        #    구글이 "항상 최신 Flash"를 가리키도록 유지하는 별칭이다. 이걸 앞에 두면
+        #    모델명이 또 바뀌어도 목록을 고칠 필요가 없다 — 이번 사고의 근본 대책이다.
+        #
+        #  ★ 그런데 latest 하나만 두면 안 된다. 이유는 두 가지다.
+        #    ① 분당 한도는 모델별로 따로 센다. 2026-08-20 로그에서 실제로
+        #       gemini-flash-latest 만 429 였다. 대안이 없으면 거기서 작업이 끝난다.
+        #    ② 503(과부하)은 새 모델일수록 잦다. 다들 최신으로 몰리기 때문이다.
+        #       한 세대 낮은 모델은 대체로 한산하다.
+        #    그래서 latest 를 앞세우되, 뒤에 실명 모델을 후보로 남겨 둔다.
+        #    (일일 한도는 프로젝트 단위라 모델을 바꿔도 안 풀린다 — 그건 _call_gemini 가
+        #     daily=True 를 보고 전환하지 않고 바로 포기한다)
+        #
+        #  ★ 404 가 나면 그 모델은 은퇴한 것이다. 응답에 대체 모델명이 적혀 오고
+        #    _retired_model_hint() 가 그걸 로그에 찍는다. 그 이름으로 갱신하면 된다.
+        "models": ["gemini-flash-latest",   # 항상 최신 = 절대 낡지 않는다
+                   "gemini-3.6-flash",      # latest 가 붐빌 때 (2026-07-21 출시)
+                   "gemini-3.5-flash-lite"],  # 더 가볍고 분당 한도가 넉넉하다
+        "model": "gemini-flash-latest",
         "key_url": "https://aistudio.google.com/apikey",
 
-        # ★ 무료 티어는 분당 10회다. 간격 없이 쏘면 반드시 429가 난다.
-        #   6초가 최소인데 여유를 둬서 6.5초. 사후 대기(20/40/60초)보다
-        #   사전 간격이 훨씬 싸다 — 자세한 사고 기록은 QuotaError 주석 참고.
-        "min_interval": 6.5,
+        # ★ 무료 티어 분당 한도에 맞춘 간격. gemini-3.6-flash 는 15 RPM 이라
+        #   4초가 최소인데, 여유를 둬서 4.5초로 잡는다.
+        #   사후 대기(20/40/60초)보다 사전 간격이 훨씬 싸다
+        #   — 자세한 사고 기록은 QuotaError 주석 참고.
+        "min_interval": 4.5,
 
         # ★ 재조립 요청 수를 줄이는 것이 핵심이다.
         #   150단어면 한 편에 23회, 400단어면 9회. 컨텍스트가 1M이라 여유롭고
@@ -325,9 +353,28 @@ class QuotaError(RuntimeError):
 
 def _is_daily_quota(body):
     """429 본문이 '일일 한도'를 가리키는지 본다.
-    구글은 metric 이름에 per_day / PerDay 를 넣어 준다."""
+
+    구글은 quota metric 이름에 per_day / PerDay / 'per day' 를 넣어 준다.
+    표기가 판마다 조금씩 달라 아래를 모두 본다.
+
+    ★ 이 함수가 제대로 일하려면 body 가 충분히 길어야 한다.
+      _post_json 에서 2000자까지 읽는 이유가 이것이다 (300자로 자르면
+      metric 이름이 날아가 항상 False 가 나온다)."""
     b = (body or "").lower()
-    return ("per_day" in b) or ("perday" in b) or ("per day" in b)
+    return any(k in b for k in ("per_day", "perday", "per day",
+                                "requests per day", "daily limit",
+                                "/day", "per-day"))
+
+
+def _retired_model_hint(body):
+    """404 본문에서 구글이 알려 주는 '대체 모델명'을 뽑는다.
+
+    구글은 은퇴한 모델을 부르면 이렇게 답한다:
+      "This model models/gemini-2.0-flash is no longer available.
+       Please update your code to use models/gemini-3.6-flash ..."
+    그 이름을 로그에 남겨 두면 ENGINES 목록을 뭘로 고쳐야 할지 바로 알 수 있다."""
+    m = re.search(r"use\s+models/([A-Za-z0-9.\-_]+)", body or "")
+    return m.group(1) if m else ""
 
 
 _QUOTA = {"streak": 0, "dead": False}
@@ -2168,6 +2215,17 @@ I18N.update({
  "fr": "  attente de {s}s pour respecter la limite {p}...",
  "pt": "  aguardando {s}s para respeitar o limite do {p}...",
  "es": "  esperando {s}s para respetar el límite de {p}..."},
+"log_model_retired": {
+ "en": "  ! {m} has been retired by Google — replacement: {n}",
+ "ko": "  ! {m} 은(는) 구글이 서비스를 종료한 모델입니다 — 대체 모델: {n}",
+ "ja": "  ! {m} はGoogleが提供終了したモデルです — 代替: {n}",
+ "zh": "  ! {m} 已被 Google 停用 — 替代模型：{n}",
+ "fr": "  ! {m} a été retiré par Google — remplacement : {n}",
+ "pt": "  ! {m} foi descontinuado pelo Google — substituto: {n}",
+ "es": "  ! {m} fue retirado por Google — reemplazo: {n}"},
+"log_model_unknown": {
+ "en": "(not stated)", "ko": "(안내 없음)", "ja": "(記載なし)", "zh": "（未说明）",
+ "fr": "(non précisé)", "pt": "(não informado)", "es": "(no indicado)"},
 "log_engine_switch": {
  "en": "  model busy or limited — switching to {m}",
  "ko": "  모델이 붐비거나 한도에 걸림 — {m} 으로 전환",
@@ -3660,10 +3718,18 @@ def _post_json(url, payload, headers, timeout=180, log=None, retries=3,
         except urllib.error.HTTPError as e:
             body = ""
             try:
-                body = e.read().decode(errors="ignore")[:300]
+                # ★ 2000자까지 읽는다. 300자로 자르지 말 것.
+                #   구글의 429 응답은 앞부분이 일반 안내문이고, '분당인지 일일인지'를
+                #   알려 주는 quota metric 이름이 그 뒤에 온다. 300자에서 자르면
+                #   하필 그 부분이 날아가 _is_daily_quota() 가 항상 False 를 돌려준다.
+                #   그래서 일일 한도인데도 20/40/60초를 헛되이 기다렸다 (2026-08-20 사고).
+                #   로그에 찍을 때만 짧게 줄인다 — 판별은 전체 본문으로 한다.
+                body = e.read().decode(errors="ignore")[:2000]
             except Exception:
                 pass
-            last_err = HttpFail(e.code, f"{e.code} {e.reason}: {body}")
+            # 판별은 위의 전체 body 로, 로그·예외 메시지는 짧게
+            brief = body[:300]
+            last_err = HttpFail(e.code, f"{e.code} {e.reason}: {brief}")
 
             # ---- 한도 오류: quota_guard 를 켠 엔진에서만 특별 취급 ----------
             #   ★ 이 분기는 Gemini 에만 들어온다. Claude 는 표에서 꺼져 있고,
@@ -3672,14 +3738,14 @@ def _post_json(url, payload, headers, timeout=180, log=None, retries=3,
                 if _is_daily_quota(body):
                     # 일일 한도 — 20/40/60초를 기다려도 오늘은 안 풀린다.
                     # 기다리는 것 자체가 순손해라 바로 올린다.
-                    raise QuotaError(f"429 daily quota: {body}", daily=True) from None
+                    raise QuotaError(f"429 daily quota: {brief}", daily=True) from None
                 if attempt < retries:
                     w = waits[min(attempt, len(waits) - 1)]
                     if log:
                         log(T("log_rate_wait", s=w, i=attempt + 1, n=retries) + "\n")
                     time.sleep(w)
                     continue
-                raise QuotaError(f"429 rate limit: {body}", daily=False) from None
+                raise QuotaError(f"429 rate limit: {brief}", daily=False) from None
 
             if e.code in retry_codes and attempt < retries:
                 w = waits[min(attempt, len(waits) - 1)]
@@ -3765,6 +3831,12 @@ def _call_gemini(api_key, system, user_text, max_tokens, log=None):
             raise
         except HttpFail as he:
             last = he
+            # 404 = 그 모델이 은퇴했다. 구글이 대체 모델명을 알려 주므로 로그에 남긴다.
+            # 이 줄이 보이면 ENGINES["gemini"]["models"] 를 그 이름으로 갱신할 것.
+            if he.code == 404 and log:
+                hint = _retired_model_hint(str(he))
+                log(T("log_model_retired", m=model,
+                      n=hint or T("log_model_unknown")) + "\n")
             if he.code in fallback and has_next:
                 if log:
                     log(T("log_engine_switch", m=models[mi + 1]) + "\n")
