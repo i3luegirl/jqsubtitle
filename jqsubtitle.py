@@ -82,7 +82,7 @@ _register_nvidia_dll_dirs()
 
 APP_NAME = "JQSubtitle"
 APP_FULL = "Just Quality AI Subtitle Maker"
-VERSION = "1.3.4"
+VERSION = "1.3.5"
 COPYRIGHT = "© 2026 JQ Park · MIT License"
 GITHUB_URL = "https://github.com/i3luegirl/jqsubtitle"
 ISSUES_URL = GITHUB_URL + "/issues"
@@ -2231,6 +2231,22 @@ I18N.update({
  "fr": "  attente de {s}s pour respecter la limite {p}...",
  "pt": "  aguardando {s}s para respeitar o limite do {p}...",
  "es": "  esperando {s}s para respetar el límite de {p}..."},
+"log_rebuild_retry": {
+ "en": "  Block {c}: reply failed validation ({r}) — retrying (attempt {a})",
+ "ko": "  묶음 {c}: 응답 검증 실패 ({r}) — 다시 시도 ({a}회차)",
+ "ja": "  ブロック {c}: 応答の検証に失敗 ({r}) — 再試行（{a}回目）",
+ "zh": "  分块 {c}：响应校验失败（{r}）— 重试（第 {a} 次）",
+ "fr": "  Bloc {c} : réponse invalide ({r}) — nouvelle tentative ({a})",
+ "pt": "  Bloco {c}: resposta inválida ({r}) — tentando de novo ({a})",
+ "es": "  Bloque {c}: respuesta inválida ({r}) — reintentando ({a})"},
+"log_rebuild_retry_ok": {
+ "en": "  Block {c}: recovered on attempt {a}",
+ "ko": "  묶음 {c}: {a}회차에 성공",
+ "ja": "  ブロック {c}: {a}回目で成功",
+ "zh": "  分块 {c}：第 {a} 次成功",
+ "fr": "  Bloc {c} : réussi à la tentative {a}",
+ "pt": "  Bloco {c}: recuperado na tentativa {a}",
+ "es": "  Bloque {c}: recuperado en el intento {a}"},
 "log_model_retired": {
  "en": "  ! {m} has been retired by Google — replacement: {n}",
  "ko": "  ! {m} 은(는) 구글이 서비스를 종료한 모델입니다 — 대체 모델: {n}",
@@ -2986,6 +3002,10 @@ def split_by_pauses(entries, log, max_chars=60, max_secs=8.0):
 
 # (한 번에 보내는 단어 수는 ENGINES 표의 "rebuild_chunk_words" — 엔진마다 다르다)
 REBUILD_MIN_SIMILARITY = 0.70  # 재조립 중 AI 텍스트 보정을 채택할 최소 유사도
+REBUILD_RETRIES = 2            # v1.3.5: 블록 검증 실패 시 재시도 횟수
+                               #   (첫 시도 포함 최대 3번. 교정·번역과 같은 값)
+                               #   ★ 0 으로 되돌리지 말 것 — 실패가 무작위라
+                               #     재시도 없이는 약 10% 구간이 무음 폴백으로 버려진다
 CORRECT_MIN_SIMILARITY = 0.55  # 교정 단계에서 수용할 최소 유사도
                                #  (외국어 -> 한국어 치환은 글자가 통째로 바뀌므로
                                #   재조립보다 느슨하게 둔다)
@@ -3158,30 +3178,57 @@ def rebuild_from_words(entries, provider, api_key, log, extra=""):
         user_text = ("[단어 목록]\n" + numbered +
                      "\n\n[참고 초안 — 틀릴 수 있음]\n" + draft)
 
+        # ---------------------------------------------------------------
+        #  v1.3.5: 재조립에도 재시도를 넣는다.
+        #
+        #  ★ 그동안 재조립만 재시도가 없었다. 검증에 걸리면 곧바로 무음 폴백으로
+        #    떨어져, 그 구간은 AI 문장 조립을 못 받고 기계적 분할로 남았다.
+        #    실측: 66블록 중 6~8개(약 10%)가 이렇게 버려졌다.
+        #      Block 27: AI reply failed validation (gap/overlap at 36) — original kept
+        #
+        #  ★ 교정·번역에서 확인했듯 이 실패는 무작위다(내용과 무관).
+        #    같은 블록을 다시 물어보면 대개 통과한다. 폴백은 정말 마지막 수단으로만.
+        #
+        #  ★ 한도 오류(QuotaError)는 재시도 대상이 아니다 — 다시 물어도 실패가
+        #    확정이고, 무료 티어에서는 요청 한 번이 아깝다. 바로 폴백으로 간다.
+        # ---------------------------------------------------------------
         spans = None
         if quota_dead():
             # ★ 한도가 소진됐다. 남은 블록은 호출해 봐야 전부 실패한다.
             #   조용히 무음 기준 폴백으로 넘긴다 (같은 오류를 수십 번 찍지 않는다).
             spans = None
         else:
-            try:
-                reply = ai_call(provider, api_key, system, user_text,
-                                max_tokens=8000, log=log)
-                spans, why = _parse_rebuild_reply(reply, count)
-                if spans is None:
-                    log(T("log_rebuild_reject", c=block, r=why) + "\n")
-            except CancelledError:
-                raise        # v1.3: 취소는 실패가 아니다 — 폴백 없이 그대로 올린다
-            except QuotaError as qe:
-                note_quota_fail(provider, qe.daily)
-                log(T("log_quota_hit", l=T("stage_rebuild"), c=block,
-                      k=T("quota_daily") if qe.daily else T("quota_minute")) + "\n")
-                if quota_dead():
-                    log(T("log_quota_abort", l=T("stage_rebuild")) + "\n")
-                spans = None
-            except Exception as ce:
-                log(T("log_rebuild_fail", e=ce) + "\n")
-                spans = None
+            for attempt in range(1, REBUILD_RETRIES + 2):
+                raise_if_cancelled()
+                why = ""
+                try:
+                    reply = ai_call(provider, api_key, system, user_text,
+                                    max_tokens=8000, log=log)
+                    spans, why = _parse_rebuild_reply(reply, count)
+                    if spans is not None:
+                        if attempt > 1:
+                            log(T("log_rebuild_retry_ok", c=block, a=attempt) + "\n")
+                        break
+                except CancelledError:
+                    raise    # v1.3: 취소는 실패가 아니다 — 폴백 없이 그대로 올린다
+                except QuotaError as qe:
+                    note_quota_fail(provider, qe.daily)
+                    log(T("log_quota_hit", l=T("stage_rebuild"), c=block,
+                          k=T("quota_daily") if qe.daily else T("quota_minute")) + "\n")
+                    if quota_dead():
+                        log(T("log_quota_abort", l=T("stage_rebuild")) + "\n")
+                    spans = None
+                    break    # 한도 문제는 재시도해도 소용없다
+                except Exception as ce:
+                    log(T("log_rebuild_fail", e=ce) + "\n")
+                    spans = None
+                    why = str(ce)[:80]
+
+                # 여기까지 왔으면 이번 시도는 실패다
+                if attempt <= REBUILD_RETRIES:
+                    log(T("log_rebuild_retry", c=block, r=why or "?", a=attempt) + "\n")
+                else:
+                    log(T("log_rebuild_reject", c=block, r=why or "?") + "\n")
 
         if spans is None:
             # 이 묶음만 침묵 기준으로 안전하게 처리 (전체를 버리지 않는다)
