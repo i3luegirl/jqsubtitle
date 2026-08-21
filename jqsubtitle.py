@@ -82,7 +82,7 @@ _register_nvidia_dll_dirs()
 
 APP_NAME = "JQSubtitle"
 APP_FULL = "Just Quality AI Subtitle Maker"
-VERSION = "1.3.3"
+VERSION = "1.3.4"
 COPYRIGHT = "© 2026 JQ Park · MIT License"
 GITHUB_URL = "https://github.com/i3luegirl/jqsubtitle"
 ISSUES_URL = GITHUB_URL + "/issues"
@@ -206,17 +206,32 @@ ENGINES = {
         "model": "gemini-flash-latest",
         "key_url": "https://aistudio.google.com/apikey",
 
-        # ★ 무료 티어 분당 한도에 맞춘 간격. gemini-3.6-flash 는 15 RPM 이라
-        #   4초가 최소인데, 여유를 둬서 4.5초로 잡는다.
-        #   사후 대기(20/40/60초)보다 사전 간격이 훨씬 싸다
-        #   — 자세한 사고 기록은 QuotaError 주석 참고.
-        "min_interval": 4.5,
+        # ---- 무료 티어 실측값 (2026-08-21, 콘솔 확인) --------------------
+        #  ★ 웹 검색으로 나오는 "분당 15회 / 일당 1500회"는 틀린 정보다.
+        #    사용자 콘솔(ai.dev/rate-limit) 실측:
+        #        RPM 5  ·  RPD 20  ·  TPM 250,000        (모델별로 각각)
+        #
+        #  ★ 이 한도의 모양이 전략을 정한다.
+        #      토큰은 남아돈다 — 한 편 처리에 TPM의 3%만 쓴다
+        #      요청 횟수가 전부다 — 하루 20회면 한 편도 빠듯하다
+        #    따라서 **묶음을 키워서 요청 수를 줄이는 것**이 유일하게 옳은 방향이다.
+        #    로컬과 정반대다. 로컬은 컨텍스트가 좁아 잘게 쪼개야 하고,
+        #    Gemini 무료는 컨텍스트가 남아돌고 요청 횟수가 모자란다.
+        #
+        #  분당 5회 = 요청당 12초. 여유를 둬서 13초.
+        "min_interval": 13.0,
 
-        # ★ 재조립 요청 수를 줄이는 것이 핵심이다.
-        #   150단어면 한 편에 23회, 400단어면 9회. 컨텍스트가 1M이라 여유롭고
-        #   묶음이 커지는 만큼 문맥도 넓어져 재조립 품질도 올라간다.
-        "rebuild_chunk_words": 400,
-        "lines_chunk": 200,
+        # ★ 요청 수를 줄이는 것이 전부다. 한 편(3,200단어 / 730줄) 기준:
+        #      400단어·200줄 -> 재조립 8 + 교정 4 + 번역 4 = 16회  (하루 한도 초과)
+        #      800단어·400줄 -> 재조립 4 + 교정 2 + 번역 2 =  8회  (하루 2편 가능)
+        #    TPM 25만 중 8천만 쓰던 상황이라 키워도 토큰은 전혀 문제되지 않는다.
+        "rebuild_chunk_words": 800,
+        "lines_chunk": 400,
+        "gap_fill_batch": 60,          # 보충도 크게 — 12줄씩 나누면 요청만 낭비한다
+
+        # 묶음이 커진 만큼 출력 한도도 올린다 (400줄 영어 ≈ 5,000토큰).
+        # TPM 25만이라 여유가 많다.
+        "max_tokens_cap": 32000,
 
         # ★ 503(과부하)·429(한도)에서도 다음 모델 후보로 넘어간다.
         #   v1.3.1까지는 404에서만 넘어갔다. gemini-3-flash가 붐빈다고
@@ -534,6 +549,7 @@ YT_CHANNEL_NAME = "sunny friends STEM"
 YT_VIDEO_URL = "https://www.youtube.com/watch?v=R8Rf05Ca5u0&list=PLKtXVVR0NNN0"
 YT_CHANNEL_URL = "https://www.youtube.com/@sunnyfriends.science"
 _GEMINI_OK_MODEL = {"name": None}    # 404 폴백으로 찾은 동작 모델 캐시
+_GEMINI_DEAD = set()                 # 오늘 일일 한도가 소진된 모델 (실행마다 초기화)
 CONFIG_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "config.json")
 
 # ============================================================================
@@ -3797,6 +3813,13 @@ def _call_gemini(api_key, system, user_text, max_tokens, log=None):
 
     ★ 한 번 성공한 모델은 _GEMINI_OK_MODEL 에 기억해 다음부터 먼저 쓴다."""
     models = list(EOPT("gemini", "models") or [ENGINES["gemini"]["model"]])
+
+    # ★ 이번 실행에서 한도가 소진된 모델은 건너뛴다.
+    #   하루 20회뿐이라 "어차피 실패할 모델"에 한 번 던지는 것도 아깝다.
+    #   이게 없으면 소진된 모델을 매 요청마다 먼저 시도해 요청을 계속 태운다.
+    alive = [m for m in models if m not in _GEMINI_DEAD]
+    if alive:
+        models = alive
     if _GEMINI_OK_MODEL["name"] in models:
         models = ([_GEMINI_OK_MODEL["name"]] +
                   [m for m in models if m != _GEMINI_OK_MODEL["name"]])
@@ -3809,7 +3832,21 @@ def _call_gemini(api_key, system, user_text, max_tokens, log=None):
                 f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent",
                 {"systemInstruction": {"parts": [{"text": system}]},
                  "contents": [{"role": "user", "parts": [{"text": user_text}]}],
-                 "generationConfig": {"maxOutputTokens": max_tokens}},
+                 "generationConfig": {
+                     "maxOutputTokens": max_tokens,
+                     # ★ 사고(thinking) 모드를 끈다. 로컬의 "think": False 와 같은 역할.
+                     #
+                     #   Gemini 3.x 는 추론 모델이라 답하기 전에 '생각'을 하는데,
+                     #   그 생각에 쓴 토큰이 maxOutputTokens 에서 함께 차감된다.
+                     #   생각이 한도를 다 먹으면 답이 앞부분만 오다가 잘린다.
+                     #
+                     #   2026-08-21 실측: 200줄을 보냈는데 매번 19~22줄만 돌아왔다.
+                     #     한도 8,000 중 약 7,600을 생각에 쓰고 400만 답에 썼다.
+                     #   교정·번역은 "번호 붙여 그대로 돌려주기"라 깊은 사고가 필요 없다.
+                     #   ★ 이 설정을 지우지 말 것. 지우면 재시도가 3배로 늘고,
+                     #     무료 티어의 하루 20회 한도를 재시도로 태우게 된다.
+                     "thinkingConfig": {"thinkingBudget": 0},
+                 }},
                 {"x-goog-api-key": api_key, "content-type": "application/json"},
                 log=log, provider="gemini")
             _GEMINI_OK_MODEL["name"] = model
@@ -3821,9 +3858,14 @@ def _call_gemini(api_key, system, user_text, max_tokens, log=None):
 
         except QuotaError as qe:
             last = qe
-            # 일일 한도는 모델을 바꿔도 같은 프로젝트 할당량이라 소용없다.
-            # 분당 한도는 모델별로 따로 세므로 다음 후보를 시도해 볼 만하다.
-            if (not qe.daily) and has_next:
+            if qe.daily:
+                _GEMINI_DEAD.add(model)   # 오늘 이 모델은 끝. 다시 시도하지 않는다
+            # ★ 분당·일일 한도 모두 '모델별'로 따로 센다 — 프로젝트 단위가 아니다.
+            #   2026-08-21 콘솔 확인: 같은 날 2.5 Flash 27회 / 3.6 Flash 21회로
+            #   각각 따로 집계돼 있었다. 즉 한 모델이 소진돼도 다른 모델은 살아 있다.
+            #   (v1.3.3 까지는 "일일은 프로젝트 단위라 소용없다"고 잘못 알고 바로
+            #    포기했다. 그래서 하루 20회만 쓰고 멈췄다 — 3개 모델이면 60회다.)
+            if has_next:
                 if log:
                     log(T("log_engine_switch", m=models[mi + 1]) + "\n")
                 pace_engine("gemini", log)
@@ -5239,6 +5281,7 @@ class App:
         self._vram_popup_shown = False
         reset_quota_state()          # v1.3.2: 지난 실행의 한도 상태를 지운다
         _LAST_CALL.clear()           #          요청 간격 기록도 초기화
+        _GEMINI_DEAD.clear()         # v1.3.4: 소진 모델 표시도 초기화 (날짜가 바뀌었을 수 있다)
         # v1.3: 안쪽 루프(스트리밍·재조립·묶음)가 취소를 즉시 알아채도록 훅을 등록한다.
         set_cancel_check(lambda: self.cancel_flag)
         threading.Thread(target=self.generate,
