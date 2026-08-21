@@ -82,7 +82,7 @@ _register_nvidia_dll_dirs()
 
 APP_NAME = "JQSubtitle"
 APP_FULL = "Just Quality AI Subtitle Maker"
-VERSION = "1.3.5"
+VERSION = "1.3.6"
 COPYRIGHT = "© 2026 JQ Park · MIT License"
 GITHUB_URL = "https://github.com/i3luegirl/jqsubtitle"
 ISSUES_URL = GITHUB_URL + "/issues"
@@ -550,6 +550,28 @@ YT_VIDEO_URL = "https://www.youtube.com/watch?v=R8Rf05Ca5u0&list=PLKtXVVR0NNN0"
 YT_CHANNEL_URL = "https://www.youtube.com/@sunnyfriends.science"
 _GEMINI_OK_MODEL = {"name": None}    # 404 폴백으로 찾은 동작 모델 캐시
 _GEMINI_DEAD = set()                 # 오늘 일일 한도가 소진된 모델 (실행마다 초기화)
+
+# ---- 사고(thinking) 설정 자동 탐색 (v1.3.6) -------------------------------
+#
+#  ★ 구글이 세대마다 '사고 끄는 방법'의 이름을 바꾼다. 하나로 고정하면 반드시 깨진다.
+#      Gemini 2.5  : thinkingBudget: 0
+#      Gemini 3.x  : thinkingLevel: "low"   (옛 이름을 주면 400 INVALID_ARGUMENT)
+#    게다가 일부 Gemini 3 모델은 사고를 아예 끌 수 없다
+#    ("Budget 0 is invalid. This model only works in thinking mode").
+#
+#  ★ 2026-08-21 사고: v1.3.4 에서 thinkingBudget: 0 을 넣었더니
+#    gemini-3.6-flash / gemini-3.5-flash-lite 가 전부 400 을 뱉었다.
+#    모델을 바꾼 직후부터 재조립·교정·번역이 통째로 실패했다.
+#
+#  ★ 그래서 이름을 추측하지 않는다. 모델명으로 세대를 알 수도 없다
+#    (gemini-flash-latest 가 몇 세대인지 이름만 봐선 모른다).
+#    아래 순서로 시도해 보고, 통한 방식을 그 모델용으로 기억한다.
+THINK_MODES = [
+    ("level",  {"thinkingLevel": "low"}),    # Gemini 3.x — 사고를 최소화
+    ("budget", {"thinkingBudget": 0}),       # Gemini 2.5 — 사고를 끔
+    ("none",   {}),                          # 최후 — 사고 설정을 아예 안 보냄
+]
+_GEMINI_THINK = {}                   # {모델명: THINK_MODES 인덱스} — 통한 방식 기억
 CONFIG_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "config.json")
 
 # ============================================================================
@@ -2231,6 +2253,22 @@ I18N.update({
  "fr": "  attente de {s}s pour respecter la limite {p}...",
  "pt": "  aguardando {s}s para respeitar o limite do {p}...",
  "es": "  esperando {s}s para respetar el límite de {p}..."},
+"log_think_retry": {
+ "en": "  {m} rejected the '{k}' thinking setting — trying another",
+ "ko": "  {m} 이(가) '{k}' 사고 설정을 거부했습니다 — 다른 방식으로 시도",
+ "ja": "  {m} が '{k}' の思考設定を拒否 — 別の方式で再試行",
+ "zh": "  {m} 拒绝了「{k}」思考设置 — 改用其他方式",
+ "fr": "  {m} a refusé le réglage de réflexion « {k} » — essai d'un autre",
+ "pt": "  {m} recusou a configuração de pensamento \"{k}\" — tentando outra",
+ "es": "  {m} rechazó el ajuste de pensamiento «{k}» — probando otro"},
+"log_think_mode": {
+ "en": "  {m} accepts the '{k}' thinking setting — remembered",
+ "ko": "  {m} 은(는) '{k}' 사고 설정을 받습니다 — 기억해 둡니다",
+ "ja": "  {m} は '{k}' の思考設定を受け付けます — 記憶しました",
+ "zh": "  {m} 接受「{k}」思考设置 — 已记住",
+ "fr": "  {m} accepte le réglage « {k} » — mémorisé",
+ "pt": "  {m} aceita a configuração \"{k}\" — memorizada",
+ "es": "  {m} acepta el ajuste «{k}» — recordado"},
 "log_rebuild_retry": {
  "en": "  Block {c}: reply failed validation ({r}) — retrying (attempt {a})",
  "ko": "  묶음 {c}: 응답 검증 실패 ({r}) — 다시 시도 ({a}회차)",
@@ -3220,9 +3258,10 @@ def rebuild_from_words(entries, provider, api_key, log, extra=""):
                     spans = None
                     break    # 한도 문제는 재시도해도 소용없다
                 except Exception as ce:
-                    log(T("log_rebuild_fail", e=ce) + "\n")
+                    # v1.3.6: 여기서 따로 찍지 않는다. 아래 재시도/거부 줄에
+                    #   같은 내용이 한 번 더 나가 로그가 두 배로 불어났다.
                     spans = None
-                    why = str(ce)[:80]
+                    why = str(ce).replace("\n", " ")[:90]
 
                 # 여기까지 왔으면 이번 시도는 실패다
                 if attempt <= REBUILD_RETRIES:
@@ -3875,27 +3914,7 @@ def _call_gemini(api_key, system, user_text, max_tokens, log=None):
     for mi, model in enumerate(models):
         has_next = mi + 1 < len(models)
         try:
-            data = _post_json(
-                f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent",
-                {"systemInstruction": {"parts": [{"text": system}]},
-                 "contents": [{"role": "user", "parts": [{"text": user_text}]}],
-                 "generationConfig": {
-                     "maxOutputTokens": max_tokens,
-                     # ★ 사고(thinking) 모드를 끈다. 로컬의 "think": False 와 같은 역할.
-                     #
-                     #   Gemini 3.x 는 추론 모델이라 답하기 전에 '생각'을 하는데,
-                     #   그 생각에 쓴 토큰이 maxOutputTokens 에서 함께 차감된다.
-                     #   생각이 한도를 다 먹으면 답이 앞부분만 오다가 잘린다.
-                     #
-                     #   2026-08-21 실측: 200줄을 보냈는데 매번 19~22줄만 돌아왔다.
-                     #     한도 8,000 중 약 7,600을 생각에 쓰고 400만 답에 썼다.
-                     #   교정·번역은 "번호 붙여 그대로 돌려주기"라 깊은 사고가 필요 없다.
-                     #   ★ 이 설정을 지우지 말 것. 지우면 재시도가 3배로 늘고,
-                     #     무료 티어의 하루 20회 한도를 재시도로 태우게 된다.
-                     "thinkingConfig": {"thinkingBudget": 0},
-                 }},
-                {"x-goog-api-key": api_key, "content-type": "application/json"},
-                log=log, provider="gemini")
+            data = _gemini_generate(model, api_key, system, user_text, max_tokens, log)
             _GEMINI_OK_MODEL["name"] = model
             try:
                 return "".join(pt.get("text", "")
@@ -3910,8 +3929,6 @@ def _call_gemini(api_key, system, user_text, max_tokens, log=None):
             # ★ 분당·일일 한도 모두 '모델별'로 따로 센다 — 프로젝트 단위가 아니다.
             #   2026-08-21 콘솔 확인: 같은 날 2.5 Flash 27회 / 3.6 Flash 21회로
             #   각각 따로 집계돼 있었다. 즉 한 모델이 소진돼도 다른 모델은 살아 있다.
-            #   (v1.3.3 까지는 "일일은 프로젝트 단위라 소용없다"고 잘못 알고 바로
-            #    포기했다. 그래서 하루 20회만 쓰고 멈췄다 — 3개 모델이면 60회다.)
             if has_next:
                 if log:
                     log(T("log_engine_switch", m=models[mi + 1]) + "\n")
@@ -3921,7 +3938,6 @@ def _call_gemini(api_key, system, user_text, max_tokens, log=None):
         except HttpFail as he:
             last = he
             # 404 = 그 모델이 은퇴했다. 구글이 대체 모델명을 알려 주므로 로그에 남긴다.
-            # 이 줄이 보이면 ENGINES["gemini"]["models"] 를 그 이름으로 갱신할 것.
             if he.code == 404 and log:
                 hint = _retired_model_hint(str(he))
                 log(T("log_model_retired", m=model,
@@ -3933,6 +3949,46 @@ def _call_gemini(api_key, system, user_text, max_tokens, log=None):
                 continue
             raise
     raise last
+
+
+def _gemini_generate(model, api_key, system, user_text, max_tokens, log=None):
+    """Gemini 한 모델에 한 번 요청한다.
+
+    ★ 사고(thinking) 설정은 모델마다 받는 이름이 다르다. 통하는 것을 찾아
+      기억해 두고, 다음부터는 바로 그것만 쓴다 (THINK_MODES 주석 참고).
+      400 INVALID_ARGUMENT 는 '그 설정을 못 알아들었다'는 신호로 보고 다음 방식을 시도한다."""
+    url = (f"https://generativelanguage.googleapis.com/v1beta/"
+           f"models/{model}:generateContent")
+    headers = {"x-goog-api-key": api_key, "content-type": "application/json"}
+
+    start = _GEMINI_THINK.get(model, 0)
+    order = list(range(start, len(THINK_MODES))) + list(range(0, start))
+    last_400 = None
+    for idx in order:
+        name, think = THINK_MODES[idx]
+        gen = {"maxOutputTokens": max_tokens}
+        gen.update(think)
+        try:
+            data = _post_json(
+                url,
+                {"systemInstruction": {"parts": [{"text": system}]},
+                 "contents": [{"role": "user", "parts": [{"text": user_text}]}],
+                 "generationConfig": gen},
+                headers, log=log, provider="gemini")
+            if _GEMINI_THINK.get(model) != idx:
+                _GEMINI_THINK[model] = idx        # 통했다 — 이 방식을 기억한다
+                if log and idx != 0:
+                    log(T("log_think_mode", m=model, k=name) + "\n")
+            return data
+        except HttpFail as he:
+            # 400 만 '설정을 못 알아들었다'로 본다. 404·429·5xx 는 설정 문제가 아니다.
+            if he.code != 400:
+                raise
+            last_400 = he
+            if log:
+                log(T("log_think_retry", m=model, k=name) + "\n")
+            pace_engine("gemini", log)
+    raise last_400
 
 
 @engine_call("local")
