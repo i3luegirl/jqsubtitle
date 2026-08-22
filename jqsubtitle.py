@@ -82,7 +82,7 @@ _register_nvidia_dll_dirs()
 
 APP_NAME = "JQSubtitle"
 APP_FULL = "Just Quality AI Subtitle Maker"
-VERSION = "1.3.6"
+VERSION = "1.3.7"
 COPYRIGHT = "© 2026 JQ Park · MIT License"
 GITHUB_URL = "https://github.com/i3luegirl/jqsubtitle"
 ISSUES_URL = GITHUB_URL + "/issues"
@@ -566,9 +566,14 @@ _GEMINI_DEAD = set()                 # 오늘 일일 한도가 소진된 모델 
 #  ★ 그래서 이름을 추측하지 않는다. 모델명으로 세대를 알 수도 없다
 #    (gemini-flash-latest 가 몇 세대인지 이름만 봐선 모른다).
 #    아래 순서로 시도해 보고, 통한 방식을 그 모델용으로 기억한다.
+#  ★ 반드시 thinkingConfig 로 한 번 감싸야 한다.
+#    v1.3.6 은 껍데기를 빼먹고 알맹이만 generationConfig 바로 아래에 넣었다.
+#    그 결과 모델 3개가 전부 'level'·'budget' 을 거부하고 'none' 으로 떨어져,
+#    사고 모드가 꺼지지 않은 채 돌면서 탐색에만 9회(모델3 × 방식3)를 낭비했다.
+#    (그래도 결과가 나온 건 출력 한도를 32,000 으로 올려둔 덕이다 — v1.3.4)
 THINK_MODES = [
-    ("level",  {"thinkingLevel": "low"}),    # Gemini 3.x — 사고를 최소화
-    ("budget", {"thinkingBudget": 0}),       # Gemini 2.5 — 사고를 끔
+    ("level",  {"thinkingConfig": {"thinkingLevel": "low"}}),   # Gemini 3.x
+    ("budget", {"thinkingConfig": {"thinkingBudget": 0}}),      # Gemini 2.5
     ("none",   {}),                          # 최후 — 사고 설정을 아예 안 보냄
 ]
 _GEMINI_THINK = {}                   # {모델명: THINK_MODES 인덱스} — 통한 방식 기억
@@ -1760,13 +1765,13 @@ I18N.update({
  "pt": "Opcional: escreva livremente o que a IA deve seguir na correção e tradução. O que você digitar fica salvo para a próxima vez.\nex.: Se nomes como Titi ou Sunny forem mal ouvidos, corrija-os. / Traduza em tom educado.",
  "es": "Opcional: escribe libremente lo que la IA debe seguir en la corrección y traducción. Lo que escribas se recuerda la próxima vez.\nej.: Si nombres como Titi o Sunny se transcriben mal, corrígelos. / Traduce en tono cortés."},
 "hint_extra": {
- "en": "Applied to correction · splitting · translation — the AI follows it where it doesn't break subtitle formatting",
- "ko": "교정·분할·번역 모두에 적용됩니다 — 자막 형식을 깨지 않는 범위에서 AI가 따릅니다",
- "ja": "校正・分割・翻訳すべてに適用 — 字幕形式を壊さない範囲でAIが従います",
- "zh": "会应用于校对·分句·翻译 — AI 在不破坏字幕格式的范围内遵循",
- "fr": "Appliqué à la correction · au découpage · à la traduction — suivi tant que le format des sous-titres est préservé",
- "pt": "Aplicado à correção · divisão · tradução — seguido sem quebrar o formato das legendas",
- "es": "Se aplica a corrección · división · traducción — se sigue sin romper el formato de los subtítulos"},
+ "en": "Once the subtitles are finished, the AI reworks them to your request — it may split, merge, add or retime lines",
+ "ko": "자막이 완성된 뒤 요청대로 다시 손봅니다 — 줄을 나누거나 합치거나 추가하고 시간도 바꿀 수 있습니다",
+ "ja": "字幕の完成後にリクエスト通り手直しします — 行の分割・結合・追加や時間の変更もできます",
+ "zh": "字幕完成后会按您的要求重新调整 — 可拆分、合并、新增行，也可更改时间",
+ "fr": "Une fois les sous-titres terminés, l'IA les retravaille selon votre demande — division, fusion, ajout et retiming possibles",
+ "pt": "Depois que as legendas ficam prontas, a IA as refaz conforme seu pedido — pode dividir, juntar, adicionar linhas e mudar tempos",
+ "es": "Cuando los subtítulos están listos, la IA los rehace según tu petición — puede dividir, unir, añadir líneas y cambiar tiempos"},
 "hq_extra_t": {"en": "Extra instructions", "ko": "AI 추가 지시", "ja": "追加指示", "zh": "附加指示",
  "fr": "Instructions supplémentaires", "pt": "Instruções extras", "es": "Instrucciones extra"},
 "hq_extra_b": {
@@ -2253,6 +2258,88 @@ I18N.update({
  "fr": "  attente de {s}s pour respecter la limite {p}...",
  "pt": "  aguardando {s}s para respeitar o limite do {p}...",
  "es": "  esperando {s}s para respetar el límite de {p}..."},
+"log_extra_stage": {
+ "en": "=== Applying your extra request ===",
+ "ko": "=== 추가 요청 반영 중 ===",
+ "ja": "=== 追加リクエストを反映中 ===",
+ "zh": "=== 正在应用您的额外要求 ===",
+ "fr": "=== Application de votre demande supplémentaire ===",
+ "pt": "=== Aplicando seu pedido extra ===",
+ "es": "=== Aplicando tu petición adicional ==="},
+"log_extra_call": {
+ "en": "  sending {n} subtitles with your request...",
+ "ko": "  자막 {n}줄과 요청을 함께 보냅니다...",
+ "ja": "  字幕 {n}行とリクエストを送信します...",
+ "zh": "  正在发送 {n} 行字幕与您的要求...",
+ "fr": "  envoi de {n} sous-titres avec votre demande...",
+ "pt": "  enviando {n} legendas com seu pedido...",
+ "es": "  enviando {n} subtítulos con tu petición..."},
+"log_extra_done": {
+ "en": "  done — {a} subtitles reworked into {b}",
+ "ko": "  완료 — 자막 {a}줄이 {b}줄로 정리됐습니다",
+ "ja": "  完了 — 字幕 {a}行が {b}行になりました",
+ "zh": "  完成 — {a} 行字幕整理为 {b} 行",
+ "fr": "  terminé — {a} sous-titres retravaillés en {b}",
+ "pt": "  concluído — {a} legendas reorganizadas em {b}",
+ "es": "  listo — {a} subtítulos reorganizados en {b}"},
+"log_extra_big": {
+ "en": "  ⚠ this looks larger than the local AI can read at once "
+       "(about {e} vs a limit of {c}) — trying anyway",
+ "ko": "  ⚠ 로컬 AI가 한 번에 읽을 수 있는 양을 넘을 것 같습니다 "
+       "(약 {e}칸 / 한도 {c}칸) — 그래도 시도합니다",
+ "ja": "  ⚠ ローカルAIが一度に読める量を超えそうです（約{e} / 上限{c}）— それでも試します",
+ "zh": "  ⚠ 可能超出本地 AI 单次可读取的量（约 {e} / 上限 {c}）— 仍会尝试",
+ "fr": "  ⚠ semble dépasser ce que l'IA locale peut lire d'un coup "
+       "(environ {e} contre une limite de {c}) — tentative quand même",
+ "pt": "  ⚠ parece maior do que a IA local consegue ler de uma vez "
+       "(cerca de {e} contra um limite de {c}) — tentando mesmo assim",
+ "es": "  ⚠ parece mayor de lo que la IA local puede leer de una vez "
+       "(unos {e} frente a un límite de {c}) — se intenta igualmente"},
+"log_extra_fail": {
+ "en": "  Extra request failed: {e}",
+ "ko": "  추가 요청 실패: {e}",
+ "ja": "  追加リクエスト失敗: {e}",
+ "zh": "  额外要求失败：{e}",
+ "fr": "  Demande supplémentaire échouée : {e}",
+ "pt": "  Pedido extra falhou: {e}",
+ "es": "  La petición adicional falló: {e}"},
+"log_extra_kept": {
+ "en": "  Subtitles were saved as they were before this step.",
+ "ko": "  자막은 이 단계 이전 상태로 저장했습니다.",
+ "ja": "  字幕はこの段階の前の状態で保存しました。",
+ "zh": "  字幕已按此步骤之前的状态保存。",
+ "fr": "  Les sous-titres ont été enregistrés tels qu'avant cette étape.",
+ "pt": "  As legendas foram salvas como estavam antes desta etapa.",
+ "es": "  Los subtítulos se guardaron tal como estaban antes de este paso."},
+"log_extra_stop": {
+ "en": "  Skipping translation — translating subtitles that ignored your request "
+       "would not be useful.",
+ "ko": "  번역을 건너뜁니다 — 요청이 반영되지 않은 자막을 번역해도 의미가 없습니다.",
+ "ja": "  翻訳をスキップします — リクエストが反映されていない字幕を翻訳しても意味がありません。",
+ "zh": "  跳过翻译 — 翻译未反映您要求的字幕没有意义。",
+ "fr": "  Traduction ignorée — traduire des sous-titres qui n'ont pas suivi votre demande "
+       "n'aurait pas d'intérêt.",
+ "pt": "  Pulando a tradução — traduzir legendas que ignoraram seu pedido não seria útil.",
+ "es": "  Se omite la traducción — traducir subtítulos que ignoraron tu petición no serviría."},
+"err_extra_short": {
+ "en": "extra request failed", "ko": "추가 요청 실패", "ja": "追加リクエスト失敗",
+ "zh": "额外要求失败", "fr": "demande supplémentaire échouée",
+ "pt": "pedido extra falhou", "es": "petición adicional fallida"},
+"hint_extra_fail": {
+ "en": "   → Shorten the request, switch to Gemini or Claude, or try a shorter video.\n"
+       "     The subtitles from before this step were still saved.",
+ "ko": "   → 요청을 줄이거나, Gemini·Claude로 바꾸거나, 짧은 영상으로 시도해 보세요.\n"
+       "     이 단계 이전의 자막은 저장되어 있습니다.",
+ "ja": "   → リクエストを短くするか、Gemini・Claudeに変えるか、短い動画で試してください。\n"
+       "     この段階より前の字幕は保存されています。",
+ "zh": "   → 请缩短要求、改用 Gemini/Claude，或换用较短的视频。\n"
+       "     此步骤之前的字幕已保存。",
+ "fr": "   → Raccourcissez la demande, passez à Gemini ou Claude, ou essayez une vidéo plus courte.\n"
+       "     Les sous-titres d'avant cette étape ont bien été enregistrés.",
+ "pt": "   → Encurte o pedido, mude para Gemini ou Claude, ou tente um vídeo mais curto.\n"
+       "     As legendas anteriores a esta etapa foram salvas.",
+ "es": "   → Acorta la petición, cambia a Gemini o Claude, o prueba con un vídeo más corto.\n"
+       "     Los subtítulos previos a este paso sí se guardaron."},
 "log_think_retry": {
  "en": "  {m} rejected the '{k}' thinking setting — trying another",
  "ko": "  {m} 이(가) '{k}' 사고 설정을 거부했습니다 — 다른 방식으로 시도",
@@ -3728,6 +3815,125 @@ def correct_with_claude(entries, provider, api_key, lang_code, log, extra=""):
         e["lines"] = [new]; changed += 1
     log(T("log_correct_done", n=changed) + "\n")
     return entries
+
+
+# =============================================================================
+#  추가 요청 단계 (v1.3.7) — 자막이 완성된 뒤 한 번 도는 자유 편집
+# =============================================================================
+#
+#  ★ 이 단계에 안전장치를 새로 만들지 말 것. 그게 이 기능을 망친 원인이다.
+#
+#    v1.3.6 까지 추가 요청은 재조립·교정·번역 프롬프트에 끼워 넣는 방식이었다.
+#    그런데 그 프롬프트들의 대전제가 "줄 수 바꾸지 마, 순서 바꾸지 마, 타이밍
+#    건드리지 마" 라서, 구조를 바꾸는 요청은 전부 무시됐다. 유사도 검사까지
+#    걸려 있어 텍스트를 크게 고치는 것도 거부됐다.
+#
+#    사용자가 요청을 직접 적었다는 것 자체가 "고쳐도 된다"는 뜻이다.
+#    유사도 검사는 *아무도 시키지 않았는데 AI 가 멋대로 바꾸는 것*을 막는 장치이지,
+#    시켜서 하는 일을 막으라고 만든 게 아니다.
+#
+#  풀어 주는 것:  텍스트 · 줄 수 · 시간 전부 자유. 겹침·역전도 검사하지 않는다.
+#  남기는 것:    ① 파싱 실패 시 이전 자막 유지  ② 시간순 정렬
+#                — 둘 다 '제약'이 아니라 '처리'다.
+#
+#  ★ 엔진으로 막지 말 것. 676줄은 로컬 컨텍스트에 안 들어가지만 200줄짜리
+#    짧은 영상은 들어간다. 미리 막으면 될 수 있었던 경우까지 막게 된다.
+#    해 보고, 안 되면 이유를 알려 준다.
+#
+#  ★ 실측 타임스탬프 원칙(§0-1)의 유일한 예외다. 2분 공백에 단어 5개만 들렸는데
+#    가사 8줄을 넣으려면 나머지 시간은 추정할 수밖에 없다. 여기서만 예외다.
+
+_EXTRA_LINE = re.compile(
+    r"^\s*(\d{1,2}):(\d{2}):(\d{2})[.,](\d{1,3})\s*-->\s*"
+    r"(\d{1,2}):(\d{2}):(\d{2})[.,](\d{1,3})\s*\|\s*(.+?)\s*$")
+
+
+def _ms(h, m, s, ms):
+    return ((int(h) * 3600 + int(m) * 60 + int(s)) * 1000
+            + int(str(ms).ljust(3, "0")[:3]))
+
+
+def _parse_extra_reply(text):
+    """'00:01:23,450 --> 00:01:25,900 | 텍스트' 줄만 뽑는다.
+
+    ★ 검사는 하지 않는다. 겹치든 역전되든 그대로 받는다.
+      못 읽는 줄만 버린다(설명문·코드펜스 등)."""
+    out = []
+    for line in text.split("\n"):
+        m = _EXTRA_LINE.match(line.strip())
+        if not m:
+            continue
+        g = m.groups()
+        start, end = _ms(*g[0:4]), _ms(*g[4:8])
+        txt = g[8].strip().strip('"').strip()
+        if txt:
+            out.append({"start_ms": start, "end_ms": end, "lines": [txt]})
+    return out
+
+
+def _extra_words_block(all_words, limit_chars=60000):
+    """단어와 시각을 압축해서 넘긴다. 'm:ss 단어' 한 줄씩."""
+    out = []
+    for w in all_words:
+        t = getattr(w, "start", 0) or 0
+        word = (getattr(w, "word", "") or "").strip()
+        if word:
+            out.append(f"{int(t)//60}:{int(t) % 60:02d} {word}")
+    s = " / ".join(out)
+    return s[:limit_chars]
+
+
+def apply_extra_request(entries, provider, api_key, log, extra, all_words):
+    """사용자의 추가 요청대로 완성 자막을 다시 손본다.
+
+    성공하면 새 entries, 실패하면 예외. 호출부는 예외를 받으면
+    이전 자막을 유지하고 번역으로 넘어가지 않는다."""
+    subs = "\n".join(
+        f"{fmt_time(e['start_ms'] / 1000.0)} --> {fmt_time(e['end_ms'] / 1000.0)} | "
+        f"{' '.join(e['lines'])}"
+        for e in entries)
+    words = _extra_words_block(all_words)
+
+    system = (
+        "You are editing a finished subtitle file. The operator has a request; do what they ask.\n\n"
+        "You are given:\n"
+        "  [SUBTITLES] the current subtitles, one per line, as 'start --> end | text'\n"
+        "  [WORDS] every word speech recognition actually heard, with the minute:second\n"
+        "          it was spoken. Use these to work out where things belong in time.\n\n"
+        "You may change the text, split or merge lines, add new lines, delete lines, and\n"
+        "set any timings you think are right. Nothing is off limits — the operator asked for this.\n"
+        "Where you add lines in a stretch with few recognised words, spread them across the\n"
+        "gap sensibly, using the surrounding words as anchors.\n\n"
+        "Return the COMPLETE subtitle file and nothing else — every line, including the ones\n"
+        "you did not change, in the exact same format:\n"
+        "  00:01:23,450 --> 00:01:25,900 | text\n"
+        "No numbering, no commentary, no code fences.\n\n"
+        "OPERATOR REQUEST:\n" + extra.strip())
+
+    user = f"[SUBTITLES]\n{subs}\n\n[WORDS]\n{words}"
+
+    # 넘칠 것 같으면 미리 알려만 준다. 막지는 않는다 — 추정이 틀릴 수 있다.
+    if provider == "local":
+        est = _est_tokens(system) + _est_tokens(user)
+        if est > LOCAL_NUM_CTX * 0.9:
+            log(T("log_extra_big", e=f"{est:,}", c=f"{LOCAL_NUM_CTX:,}") + "\n")
+
+    log(T("log_extra_call", n=len(entries)) + "\n")
+    reply = ai_call(provider, api_key, system, user,
+                    max_tokens=EOPT(provider, "max_tokens_cap"), log=log)
+
+    got = _parse_extra_reply(reply)
+    if len(got) < 1:
+        raise RuntimeError(f"no usable subtitle lines came back "
+                           f"(reply was {len(reply)} chars)")
+
+    got.sort(key=lambda e: e["start_ms"])      # SRT 는 시간순 파일이다
+    for i, e in enumerate(got, 1):
+        e["index"] = str(i)
+        e["time"] = (f"{fmt_time(e['start_ms'] / 1000.0)} --> "
+                     f"{fmt_time(e['end_ms'] / 1000.0)}")
+    log(T("log_extra_done", a=len(entries), b=len(got)) + "\n")
+    return got
 
 
 # ---------------- Claude 번역 ----------------
@@ -5593,6 +5799,33 @@ class App:
                     # 최종 자막 기준으로 끝 1초 지연 적용 (겹침 방지)
                     src_entries = apply_trailing_delay(src_entries, extra=1.0)
 
+                    # ---------- 1-b) 추가 요청 단계 (v1.3.7) ----------
+                    #
+                    #  ★ 반드시 '한국어 저장보다 앞, 번역보다 앞' 이다.
+                    #    뒤로 옮기면 저장된 파일에 요청 결과가 안 들어가거나,
+                    #    언어마다 따로 돌아 결과가 서로 어긋난다.
+                    #
+                    #  ★ 실패하면 번역으로 넘어가지 않는다.
+                    #    원하지 않는 자막을 번역하는 건 의미가 없다.
+                    #    다만 한국어 자막은 저장한다 — 받아쓰기·재조립·교정까지는
+                    #    정상 결과물이고, 이 기능이 없던 시절 파일과 같다.
+                    extra_req = self.get_extra().strip()
+                    extra_failed = False
+                    if key and extra_req:
+                        self.write_log("\n" + T("log_extra_stage") + "\n")
+                        try:
+                            src_entries = apply_extra_request(
+                                src_entries, prov, key, self.write_log,
+                                extra_req, all_words)
+                        except CancelledError:
+                            raise
+                        except Exception as ee:
+                            extra_failed = True
+                            msg = str(ee).replace("\n", " ")[:200]
+                            self.write_log(T("log_extra_fail", e=msg) + "\n")
+                            self.write_log(T("log_extra_kept") + "\n")
+                            errors.append((fname, T("err_extra_short"), "hint_extra_fail"))
+
                     # 기준 언어: SRT + SMI (접미사 없음 -> 플레이어 자동 인식)
                     src_srt = f"{base}.srt"
                     with open(src_srt, "w", encoding="utf-8", newline="") as f:
@@ -5610,6 +5843,12 @@ class App:
                             f.write(src_smi_content)
                     out_paths.append(src_smi)
                     self.write_log(T("log_saved", p=src_smi) + "\n")
+
+                    # v1.3.7: 추가 요청이 실패했으면 여기서 멈춘다.
+                    #   요청대로 안 된 자막을 번역해 봐야 쓸모가 없다.
+                    if extra_failed:
+                        self.write_log(T("log_extra_stop") + "\n")
+                        continue
 
                     # ---------- 2) 나머지 언어: 번역 ----------
                     source_name = LANG_FULLNAME.get(base_code, base_code)
