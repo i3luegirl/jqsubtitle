@@ -1,11 +1,17 @@
-﻿# JQSubtitle one-line installer
+# JQSubtitle one-line installer
 # Copyright (c) 2026 JQ Park. MIT License.
 # Usage (PowerShell):  irm https://raw.githubusercontent.com/i3luegirl/jqsubtitle/main/install.ps1 | iex
+#
+# RULE: comments in this file must be ASCII English only. No Korean.
+# This file is run through `irm ... | iex`, so it is decoded as a raw string
+# before it is parsed. Non-ASCII bytes in comments are a needless way to break
+# that on a mis-detected encoding. User-facing Write-Host text may stay bilingual.
 
 $ErrorActionPreference = "Stop"
 [Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor 3072  # TLS 1.2
 $RepoRaw    = "https://raw.githubusercontent.com/i3luegirl/jqsubtitle/main"
-# v1.2부터 배포 파일명은 버전 없이 고정. 새 버전이 나와도 이 줄은 그대로 둔다.
+# Since v1.2 the published filename is fixed with no version in it.
+# Leave this line alone when a new version ships.
 $AppFile    = "jqsubtitle.py"
 $IconFile   = "jqsubtitle.ico"
 $InstallDir = Join-Path $env:LOCALAPPDATA "JQSubtitle"
@@ -70,7 +76,7 @@ New-Item -ItemType Directory -Force -Path $InstallDir | Out-Null
 $target = Join-Path $InstallDir "jqsubtitle.py"
 $tmp    = "$target.download"
 Invoke-WebRequest "$RepoRaw/$AppFile" -OutFile $tmp
-Move-Item $tmp $target -Force          # 중간에 끊겨도 기존 설치가 깨지지 않도록
+Move-Item $tmp $target -Force          # so an interrupted download cannot break an existing install
 Write-Host "    Saved to: $target"
 
 $icon = Join-Path $InstallDir "jqsubtitle.ico"
@@ -78,7 +84,7 @@ try {
     Invoke-WebRequest "$RepoRaw/$IconFile" -OutFile $icon
 } catch {
     Write-Host "    Icon download skipped (using default icon)." -ForegroundColor Yellow
-    Remove-Item $icon -Force -ErrorAction SilentlyContinue   # 잘린 파일이 남지 않도록
+    Remove-Item $icon -Force -ErrorAction SilentlyContinue   # do not leave a truncated file behind
     $icon = $null
 }
 
@@ -91,11 +97,11 @@ if ($LASTEXITCODE -ne 0) {
 
 # ---------- 3-b) CUDA runtime (NVIDIA GPU) ----------
 #
-# v1.3.8: 이게 없으면 faster-whisper 가 GPU 를 못 쓴다.
-#   WhisperModel(device="cuda") 는 성공하는데 실제 받아쓰기에서
-#   "cublas64_12.dll is not found" 로 터진다. 그래서 GPU 를 쓰는 줄 알고
-#   CPU 로 도는 일이 있었다. 설치 단계에서 미리 깔아 둔다.
-#   NVIDIA 카드가 없어도 무해하다 — 파일만 놓이고 쓰이지 않는다.
+# v1.3.8: without this, faster-whisper cannot use the GPU.
+#   WhisperModel(device="cuda") succeeds, but the actual transcription dies with
+#   "cublas64_12.dll is not found". That made runs fall back to CPU while the
+#   user believed the GPU was in use. Install it up front instead.
+#   Harmless without an NVIDIA card - the files are just placed and never used.
 Write-Step "Installing the CUDA runtime for GPU speed... (GPU 가속용 CUDA 런타임 설치 중)"
 & $pyexe -m pip install --upgrade nvidia-cublas-cu12 nvidia-cudnn-cu12
 if ($LASTEXITCODE -ne 0) {
